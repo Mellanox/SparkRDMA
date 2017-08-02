@@ -268,7 +268,7 @@ class RdmaAnnounceExecutorsRpcMsg(
       val hostnameInUtf = hostPort.host.getBytes(Charset.forName("UTF-8"))
       val length = 2 + hostnameInUtf.length + 4
 
-      if (!segmentSizes.isEmpty && (segmentSizes.last + length <= segmentSize)) {
+      if (segmentSizes.nonEmpty && (segmentSizes.last + length <= segmentSize)) {
         segmentSizes.update(segmentSizes.length - 1, segmentSizes.last + length)
       } else {
         segmentSizes += length

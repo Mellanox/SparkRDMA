@@ -1,14 +1,3 @@
-package org.apache.spark.shuffle.rdma;
-
-import com.ibm.disni.rdma.verbs.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.util.LinkedList;
-import java.util.concurrent.*;
 /*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with
@@ -26,6 +15,18 @@ import java.util.concurrent.*;
  * limitations under the License.
  */
 
+package org.apache.spark.shuffle.rdma;
+
+import com.ibm.disni.rdma.verbs.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.util.LinkedList;
+import java.util.concurrent.*;
+
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import scala.concurrent.ExecutionContext;
@@ -33,17 +34,20 @@ import scala.concurrent.ExecutionContext;
 public class RdmaNode {
   private static final Logger logger = LoggerFactory.getLogger(RdmaNode.class);
   private static final int BACKLOG = 128;
+
   private final RdmaShuffleConf conf;
   private final RdmaCompletionListener receiveListener;
-  private ConcurrentHashMap<InetSocketAddress, RdmaChannel> activeRdmaChannelMap = new ConcurrentHashMap<>();
-  private ConcurrentHashMap<InetSocketAddress, RdmaChannel> passiveRdmaChannelMap = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<InetSocketAddress, RdmaChannel> activeRdmaChannelMap =
+    new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<InetSocketAddress, RdmaChannel> passiveRdmaChannelMap =
+    new ConcurrentHashMap<>();
   private RdmaBufferManager rdmaBufferManager = null;
-  private RdmaCmId listenCmId;
+  private RdmaCmId listenerRdmaCmId;
   private RdmaEventChannel cmChannel;
-  private AtomicBoolean runThread = new AtomicBoolean(false);
+  private final AtomicBoolean runThread = new AtomicBoolean(false);
   private Thread listeningThread;
-  private IbvPd pd;
-  private InetSocketAddress localAddress;
+  private IbvPd ibvPd;
+  private InetSocketAddress localInetSocketAddress;
   private InetAddress driverInetAddress;
 
   public RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
@@ -59,52 +63,54 @@ public class RdmaNode {
         throw new IOException("Unable to allocate RDMA Event Channel");
       }
 
-      listenCmId = cmChannel.createId(RdmaCm.RDMA_PS_TCP);
-      if (this.listenCmId == null) {
+      listenerRdmaCmId = cmChannel.createId(RdmaCm.RDMA_PS_TCP);
+      if (this.listenerRdmaCmId == null) {
         throw new IOException("Unable to allocate RDMA CM Id");
       }
 
       int err = 0;
       int bindPort = isExecutor ? conf.executorPort() : conf.driverPort();
       for (int i = 0; i < conf.portMaxRetries(); i++) {
-        err = listenCmId.bindAddr(new InetSocketAddress(InetAddress.getByName(hostName), bindPort));
+        err = listenerRdmaCmId.bindAddr(
+          new InetSocketAddress(InetAddress.getByName(hostName), bindPort));
         if (err == 0) {
           break;
         }
         logger.info("Failed to bind to port {} on iteration {}", bindPort, i);
         bindPort = bindPort != 0 ? bindPort+1 : 0;
       }
-
       if (err != 0) {
         throw new IOException("Unable to bind, err: " + err);
       }
 
-      err = listenCmId.listen(BACKLOG);
+      err = listenerRdmaCmId.listen(BACKLOG);
       if (err != 0) {
         throw new IOException("Failed to start listener: " + err);
       }
 
-      localAddress = (InetSocketAddress)listenCmId.getSource();
+      localInetSocketAddress = (InetSocketAddress) listenerRdmaCmId.getSource();
 
-      pd = listenCmId.getVerbs().allocPd();
-      if (pd == null) {
+      ibvPd = listenerRdmaCmId.getVerbs().allocPd();
+      if (ibvPd == null) {
         throw new IOException("Failed to create PD");
       }
+
+      this.rdmaBufferManager = new RdmaBufferManager(ibvPd, isExecutor, conf);
     } catch (IOException e) {
       logger.error("Failed in RdmaNode constructor");
       stop();
       throw e;
     } catch (UnsatisfiedLinkError ule) {
-      logger.error("libdisni not found! It must be installed within the java.library.path on each Executor and Driver instance");
+      logger.error("libdisni not found! It must be installed within the java.library.path on each" +
+        " Executor and Driver instance");
       throw ule;
     }
-
-    rdmaBufferManager = new RdmaBufferManager(pd, isExecutor, conf);
 
     listeningThread = new Thread(new Runnable() {
       @Override
       public void run() {
         logger.info("Starting RdmaNode Listening Server");
+
         while (runThread.get()) {
           try {
             // Wait for next event
@@ -117,46 +123,63 @@ public class RdmaNode {
             int eventType = event.getEvent();
             event.ackEvent();
 
-            // TODO: must implement reject on redundant connection, and manage mutual connect
-            InetSocketAddress iA = (InetSocketAddress)cmId.getDestination();
+            InetSocketAddress inetSocketAddress = (InetSocketAddress)cmId.getDestination();
+
+            // TODO: Handle reject on redundant connection, and manage mutual connect
             if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_CONNECT_REQUEST.ordinal()) {
-              if (passiveRdmaChannelMap.get(iA) != null) {
-                logger.error("Received redundant RDMA connection request for iA: {}", iA);
+              RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
+              if (rdmaChannel != null) {
+                logger.warn("Received a redundant RDMA connection request for " +
+                  "inetSocketAddress: {}", inetSocketAddress);
                 continue;
               }
 
               boolean isRpc = false;
-              if (driverInetAddress.equals(iA.getAddress()) || driverInetAddress.equals(localAddress.getAddress())) {
+              if (driverInetAddress.equals(inetSocketAddress.getAddress()) ||
+                driverInetAddress.equals(localInetSocketAddress.getAddress())) {
                 isRpc = true;
               }
-              RdmaChannel rdmaChannel = new RdmaChannel(conf, rdmaBufferManager, false, true, receiveListener, cmId, isRpc, true);
-              if (passiveRdmaChannelMap.putIfAbsent(iA, rdmaChannel) != null) {
-                logger.error("Race creating the RDMA Channel for iA: {}", iA);
+
+              rdmaChannel = new RdmaChannel(
+                conf,
+                rdmaBufferManager,
+                false,
+                true,
+                receiveListener,
+                cmId,
+                isRpc,
+                true);
+              if (passiveRdmaChannelMap.putIfAbsent(inetSocketAddress, rdmaChannel) != null) {
+                logger.warn("Race creating the RDMA Channel for inetSocketAddress: {}",
+                  inetSocketAddress);
                 rdmaChannel.stop();
                 continue;
               }
 
-              rdmaChannel.rdmaAccept();
+              rdmaChannel.accept();
             } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_ESTABLISHED.ordinal()) {
-              RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(iA);
+              RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
               if (rdmaChannel == null) {
-                logger.error("Received Established Event for iA not in the rdmaChannelMap, {}", iA);
+                logger.warn("Received Established Event for inetSocketAddress not in the " +
+                  "passiveRdmaChannelMap, {}", inetSocketAddress);
                 continue;
               }
 
               rdmaChannel.finalizeConnection();
             } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_DISCONNECTED.ordinal()) {
-              RdmaChannel rdmaChannel = passiveRdmaChannelMap.remove(iA);
+              RdmaChannel rdmaChannel = passiveRdmaChannelMap.remove(inetSocketAddress);
               if (rdmaChannel == null) {
-                logger.error("Received Disconnect Event for iA not in the rdmaChannelMap, {}", iA);
+                logger.warn("Received Disconnect Event for inetSocketAddress not in the " +
+                  "passiveRdmaChannelMap, {}", inetSocketAddress);
                 continue;
               }
+
               rdmaChannel.stop();
             } else {
-                logger.info("Unhandled CM Event {}", eventType);
-                continue;
+              logger.info("Unexpected CM Event {}", eventType);
             }
           } catch (Exception e) {
+            // TODO: Improve handling of exceptions
             e.printStackTrace();
           }
         }
@@ -170,24 +193,33 @@ public class RdmaNode {
 
   public RdmaBufferManager getRdmaBufferManager() { return rdmaBufferManager; }
 
-  public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr) throws IOException, InterruptedException {
+  public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr)
+      throws IOException, InterruptedException {
     RdmaChannel rdmaChannel;
 
     while (true) {
       rdmaChannel = activeRdmaChannelMap.get(remoteAddr);
       if (rdmaChannel == null) {
-        rdmaChannel = new RdmaChannel(conf, rdmaBufferManager, true, false, receiveListener, false, false);
+        rdmaChannel = new RdmaChannel(
+          conf,
+          rdmaBufferManager,
+          true,
+          false,
+          receiveListener,
+          false,
+          false);
+
         RdmaChannel actualRdmaChannel = activeRdmaChannelMap.putIfAbsent(remoteAddr, rdmaChannel);
         if (actualRdmaChannel != null) {
           rdmaChannel = actualRdmaChannel;
         } else {
           try {
             long startTime = System.nanoTime();
-            rdmaChannel.rdmaConnect(remoteAddr);
-            logger.info("Established connection to " + remoteAddr + ", took " +
+            rdmaChannel.connect(remoteAddr);
+            logger.info("Established connection to " + remoteAddr + " in " +
               (System.nanoTime() - startTime) / 1000000 + " ms");
           } catch (IOException e) {
-            logger.error("rdmaConnect failed");
+            logger.error("connect failed");
             activeRdmaChannelMap.remove(remoteAddr, rdmaChannel);
             rdmaChannel.stop();
             throw e;
@@ -196,9 +228,9 @@ public class RdmaNode {
       }
 
       // TODO: Need to handle failures, add timeout, handle dead connections
-      // TODO: timeout is not good since we have an issue with multiple connections
-      if (rdmaChannel.isConnecting() || rdmaChannel.isIdle()) {
-        rdmaChannel.waitForActiveConnection(100);
+      // TODO: Limit number of iterations in while loop
+      if (!rdmaChannel.isConnected()) {
+        rdmaChannel.waitForActiveConnection();
       }
 
       if (rdmaChannel.isConnected()) {
@@ -206,7 +238,7 @@ public class RdmaNode {
       }
     }
 
-    assert (rdmaChannel.isConnected());
+    assert(rdmaChannel.isConnected());
     return rdmaChannel;
   }
 
@@ -220,39 +252,40 @@ public class RdmaNode {
         }
       }
     }, null);
-    // TODO: We should use our own ExectorService in Java
-    ExecutionContext.Implicits$.MODULE$.global().execute(futureTask);
 
+    // TODO: Use our own ExecutorService in Java
+    ExecutionContext.Implicits$.MODULE$.global().execute(futureTask);
     return futureTask;
   }
 
   public void stop() throws Exception {
+    // Spawn simultaneous disconnect tasks to speed up tear-down
     LinkedList<FutureTask<Void>> futureTaskList = new LinkedList<>();
     for (InetSocketAddress inetSocketAddress: activeRdmaChannelMap.keySet()) {
       final RdmaChannel rdmaChannel = activeRdmaChannelMap.remove(inetSocketAddress);
       futureTaskList.add(createFutureChannelStopTask(rdmaChannel));
     }
 
+    // Wait for all of the channels to disconnect
     for (FutureTask<Void> futureTask: futureTaskList) { futureTask.get(); }
 
-    if (runThread.get()) {
-      runThread.set(false);
-      listeningThread.join();
-    }
+    if (runThread.getAndSet(false)) { listeningThread.join(); }
 
+    // Spawn simultaneous disconnect tasks to speed up tear-down
     futureTaskList = new LinkedList<>();
     for (InetSocketAddress inetSocketAddress: passiveRdmaChannelMap.keySet()) {
       final RdmaChannel rdmaChannel = passiveRdmaChannelMap.remove(inetSocketAddress);
       futureTaskList.add(createFutureChannelStopTask(rdmaChannel));
     }
 
+    // Wait for all of the channels to disconnect
     for (FutureTask<Void> futureTask: futureTaskList) { futureTask.get(); }
 
     if (rdmaBufferManager != null) { rdmaBufferManager.stop(); }
-    if (pd != null) { pd.deallocPd(); }
-    if (listenCmId != null) { listenCmId.destroyId(); }
+    if (ibvPd != null) { ibvPd.deallocPd(); }
+    if (listenerRdmaCmId != null) { listenerRdmaCmId.destroyId(); }
     if (cmChannel != null) { cmChannel.destroyEventChannel(); }
   }
 
-  public InetSocketAddress getLocalAddress() { return localAddress; }
+  public InetSocketAddress getLocalInetSocketAddress() { return localInetSocketAddress; }
 }

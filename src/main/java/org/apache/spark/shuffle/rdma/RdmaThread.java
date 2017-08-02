@@ -26,12 +26,12 @@ import com.ibm.disni.util.NativeAffinity;
 public class RdmaThread implements Runnable {
   private static final Logger logger = LoggerFactory.getLogger(RdmaThread.class);
 
-  private RdmaChannel rChannel;
+  private RdmaChannel rdmaChannel;
   private Thread thread = new Thread(this, "RDMA channel CQ processing thread");
   private AtomicBoolean runThread  = new AtomicBoolean(false);
 
-  public RdmaThread(RdmaChannel rChannel) {
-    this.rChannel = rChannel;
+  RdmaThread(RdmaChannel rdmaChannel) {
+    this.rdmaChannel = rdmaChannel;
   }
 
   public synchronized void start() {
@@ -40,14 +40,13 @@ public class RdmaThread implements Runnable {
   }
 
   public void run() {
-    logger.info("Starting RdmaThread");
-    long affinity = 1L << rChannel.getCpuVector();
+    long affinity = 1L << rdmaChannel.getCpuVector();
     NativeAffinity.setAffinity(affinity);
 
     boolean isStillProcessing = false;
     while (runThread.get() || isStillProcessing) {
       try {
-        isStillProcessing = rChannel.processCompletions();
+        isStillProcessing = rdmaChannel.processCompletions();
       } catch (IOException ioe) {
         logger.error("RdmaThread exception: {}", ioe);
       }
@@ -55,8 +54,6 @@ public class RdmaThread implements Runnable {
   }
 
   public synchronized void stop() throws InterruptedException {
-    runThread.set(false);
-    thread.join();
-    logger.info("Closing RdmaThread");
+    if (runThread.getAndSet(false)) { thread.join(); }
   }
 }

@@ -24,19 +24,11 @@ import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.shuffle.rdma.RdmaBuffer
 
-/**
- * An OutputStream that writes to fixed-size chunks of byte arrays.
- *
- * @param chunkSize size of each chunk, in bytes.
- */
-private[spark] class RdmaChunkedByteBufferOutputStream(chunkSize: Int)
-  extends OutputStream {
-
+private[spark] class RdmaChunkedByteBufferOutputStream(chunkSize: Int) extends OutputStream {
   def this(chunkSize: Int, arrBuf: ArrayBuffer[(RdmaBuffer, ByteBuffer)]) {
     this(chunkSize)
     chunks = arrBuf
     chunks.foreach(_._2.clear())
-    this
   }
 
   private[this] var toChunkedByteBufferWasCalled = false
@@ -48,15 +40,8 @@ private[spark] class RdmaChunkedByteBufferOutputStream(chunkSize: Int)
     (rdmaBuf, rdmaBuf.getByteBuffer)
   }
 
-  /** Index of the last chunk. Starting with -1 when the chunks array is empty. */
   private[this] var lastChunkIndex = -1
 
-  /**
-   * Next position to write in the last chunk.
-   *
-   * If this equals chunkSize, it means for next write we need to allocate a new chunk.
-   * This can also never be 0.
-   */
   private[this] var position = chunkSize
   private[this] var _size = 0
 

@@ -73,7 +73,6 @@ public class RdmaSyncFile {
       this.alignedLength = alignedLength;
     }
   }
-
   private final List<RdmaFileMapping> rdmaFileMappings = new ArrayList<>(1);
 
   static {
@@ -205,7 +204,8 @@ public class RdmaSyncFile {
     long address = mapAddress + distanceFromPageBoundary;
 
     if (length > Int.MaxValue()) {
-      throw new IOException("Registering files larger than " + Int.MaxValue() + "B is not supported");
+      throw new IOException("Registering files larger than " + Int.MaxValue() +
+        "B is not supported");
     }
 
     SVCRegMr svcRegMr = ibvPd.regMr(address, (int)length, ACCESS).execute();
@@ -270,16 +270,8 @@ public class RdmaSyncFile {
     return byteBuffer;
   }
 
-  private ByteBuffer getByteBuffer(long fileOffset, long length) throws IOException {
-    if (fileOffset + length > fileLength) {
-      throw new IndexOutOfBoundsException("Requested a ByteBuffer which is not contained within " +
-        "the file");
-    }
-    return getByteBuffer(getAddressForOffset(fileOffset, length), (int)length);
-  }
-
   public ByteBuffer getByteBuffer() throws IOException {
-    return getByteBuffer(0, fileLength);
+    return getByteBuffer(getAddressForOffset(0, fileLength), (int)fileLength);
   }
 
   private RdmaFileMapping getRdmaFileMappingForOffset(long fileOffset, long length) {

@@ -105,7 +105,12 @@ public class RdmaBuffer {
   }
 
   public void write(byte[] bytes, long srcOffset, long dstOffset, long length) {
-    unsafe.copyMemory(bytes, BYTE_ARRAY_OFFSET + srcOffset, null, getAddress() + dstOffset, length);
+    unsafe.copyMemory(
+      bytes,
+      BYTE_ARRAY_OFFSET + srcOffset,
+      null,
+      getAddress() + dstOffset,
+      length);
   }
 
   public ByteBuffer getByteBuffer() throws IOException {

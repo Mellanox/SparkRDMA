@@ -22,6 +22,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.mutable.ArrayBuffer
+
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
@@ -30,13 +31,8 @@ import org.apache.spark.shuffle.rdma._
 import org.apache.spark.shuffle.rdma.writer.RdmaShuffleData
 import org.apache.spark.storage.ShuffleBlockId
 
-class RdmaChunkedPartitionAggShuffleData(
-  shuffleId: Int,
-  numPartitions: Int,
-  localHostPort: HostPort,
-  rdmaShuffleManager: RdmaShuffleManager,
-  rdmaShuffleConf: RdmaShuffleConf) extends RdmaShuffleData {
-
+class RdmaChunkedPartitionAggShuffleData(shuffleId: Int, numPartitions: Int,
+    rdmaShuffleManager: RdmaShuffleManager) extends RdmaShuffleData {
   private val writers = Array.fill(numPartitions) {
     new RdmaShufflePartitionWriter(rdmaShuffleManager)
   }
@@ -59,13 +55,18 @@ class RdmaChunkedPartitionAggShuffleData(
       writers.zipWithIndex.foreach {
         case (writer: RdmaShufflePartitionWriter, partitionId: Int) =>
           for (location <- writer.getLocations) {
-            rdmaPartitionLocations += new RdmaPartitionLocation(localHostPort, partitionId,
+            rdmaPartitionLocations += new RdmaPartitionLocation(
+              rdmaShuffleManager.getLocalHostPort,
+              partitionId,
               location)
           }
       }
 
-      rdmaShuffleManager.publishPartitionLocations(rdmaShuffleConf.driverHost,
-        rdmaShuffleConf.driverPort, shuffleId, rdmaPartitionLocations)
+      rdmaShuffleManager.publishPartitionLocations(
+        rdmaShuffleManager.rdmaShuffleConf.driverHost,
+        rdmaShuffleManager.rdmaShuffleConf.driverPort,
+        shuffleId,
+        rdmaPartitionLocations)
     }
 
     System.nanoTime() - startTime

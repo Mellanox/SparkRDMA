@@ -35,8 +35,6 @@ class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
     extends IndexShuffleBlockResolver(rdmaShuffleManager.conf) with Logging {
   private lazy val blockManager = SparkEnv.get.blockManager
   private val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
-  lazy val localHostPort = HostPort(rdmaShuffleManager.getLocalAddress.getHostString,
-    rdmaShuffleManager.getLocalAddress.getPort)
 
   private val rdmaShuffleDataMap = new ConcurrentHashMap[Int, RdmaShuffleData]
 
@@ -62,8 +60,7 @@ class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
         case ShuffleWriterMethod.Wrapper =>
           new RdmaWrapperShuffleData(shuffleId, numPartitions, rdmaShuffleManager)
         case ShuffleWriterMethod.ChunkedPartitionAgg =>
-          new RdmaChunkedPartitionAggShuffleData(shuffleId, numPartitions, localHostPort,
-            rdmaShuffleManager, rdmaShuffleConf)
+          new RdmaChunkedPartitionAggShuffleData(shuffleId, numPartitions, rdmaShuffleManager)
       }
 
       rdmaShuffleDataMap.put(shuffleId, rdmaShuffleData)

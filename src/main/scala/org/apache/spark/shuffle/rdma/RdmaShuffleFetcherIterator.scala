@@ -62,9 +62,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
   @GuardedBy("this")
   private[this] var isStopped = false
 
-  private[this] val localHostPort = HostPort(rdmaShuffleManager.getLocalAddress.getHostString,
-    rdmaShuffleManager.getLocalAddress.getPort)
-
+  private[this] val localHostPort = rdmaShuffleManager.getLocalHostPort
   private[this] val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
 
   private[this] val maxBytesInFlight = rdmaShuffleConf.maxBytesInFlight
@@ -105,7 +103,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
 
   private[this] def startAsyncFetches() {
     val startRemotePartitionLocationFetch = System.currentTimeMillis()
-    // TODO: we can wait for them with a single "Await", or instead of them unblocking somehow
+    // TODO: Can wait for them with a single "Await", or instead of them unblocking somehow
     val groupedRemoteRdmaPartitionLocations = {
       (for (partitionId <- startPartition until endPartition) yield {
         val future = rdmaShuffleManager.fetchRemotePartitionLocations(shuffleId, partitionId)

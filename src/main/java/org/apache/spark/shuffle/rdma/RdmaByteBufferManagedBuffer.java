@@ -24,22 +24,18 @@ import java.nio.ByteBuffer;
 
 import com.google.common.base.Objects;
 
-import io.netty.buffer.Unpooled;
 import org.apache.spark.network.buffer.ManagedBuffer;
 
 public final class RdmaByteBufferManagedBuffer extends RdmaManagedBuffer {
   private final RdmaRegisteredBuffer rdmaRegisteredBuffer;
   private ByteBuffer byteBuffer;
 
-  public RdmaByteBufferManagedBuffer(RdmaRegisteredBuffer rdmaRegisteredBuffer, int length) {
+  public RdmaByteBufferManagedBuffer(RdmaRegisteredBuffer rdmaRegisteredBuffer, int length)
+      throws IOException {
     this.rdmaRegisteredBuffer = rdmaRegisteredBuffer;
     this.byteBuffer = rdmaRegisteredBuffer.getByteBuffer(length);
     this.byteBuffer.limit(length);
     retain();
-  }
-
-  public ByteBuffer getByteBuffer() {
-    return byteBuffer;
   }
 
   @Override
@@ -90,7 +86,7 @@ public final class RdmaByteBufferManagedBuffer extends RdmaManagedBuffer {
 
   @Override
   public Object convertToNetty() throws IOException {
-    return Unpooled.wrappedBuffer(byteBuffer);
+    throw new UnsupportedOperationException();
   }
 
   @Override

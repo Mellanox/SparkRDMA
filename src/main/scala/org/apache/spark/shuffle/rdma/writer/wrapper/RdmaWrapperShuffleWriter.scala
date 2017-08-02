@@ -68,7 +68,7 @@ class RdmaWrapperShuffleData(
       }
     }
 
-    val rdmaFile = new RdmaSyncFile(dataFile, rdmaShuffleManager.getPd,
+    val rdmaFile = new RdmaSyncFile(dataFile, rdmaShuffleManager.getIbvPd,
       rdmaShuffleManager.rdmaShuffleConf.shuffleWriteBlockSize.toInt, lengths)
 
     val oldFile = rdmaSyncFileByMapId.put(mapId, rdmaFile)
@@ -110,9 +110,12 @@ class RdmaWrapperShuffleWriter[K, V, C](
       return None
     }
     stopping = true
+
     val optMapStatus = writer.stop(success)
 
     if (success) {
+      val rdmaShuffleManager = env.shuffleManager.asInstanceOf[RdmaShuffleManager]
+      val localHostPort = rdmaShuffleManager.getLocalHostPort
       val dep = handle.dependency
       val rdmaPartitionLocations = new ArrayBuffer[RdmaPartitionLocation]
       val rdmaSyncFile = rdmaShuffleBlockResolver.getRdmaShuffleData(dep.shuffleId).
@@ -122,14 +125,13 @@ class RdmaWrapperShuffleWriter[K, V, C](
         val rdmaBlockLocation = rdmaSyncFile.getRdmaBlockLocationForPartition(partitionId)
         if (rdmaBlockLocation.length > 0) {
           rdmaPartitionLocations += new RdmaPartitionLocation(
-            rdmaShuffleBlockResolver.localHostPort,
+            localHostPort,
             partitionId,
             rdmaBlockLocation)
         }
       }
 
       // TODO: For increased safety, we can check if this is the latest when received in the driver
-      val rdmaShuffleManager = env.shuffleManager.asInstanceOf[RdmaShuffleManager]
       val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
       rdmaShuffleManager.publishPartitionLocations(
         rdmaShuffleConf.driverHost,

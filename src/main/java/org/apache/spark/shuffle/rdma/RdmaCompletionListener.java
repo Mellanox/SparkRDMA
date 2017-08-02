@@ -20,8 +20,6 @@ package org.apache.spark.shuffle.rdma;
 import java.nio.ByteBuffer;
 import java.util.EventListener;
 
-import org.apache.spark.network.buffer.ManagedBuffer;
-
 public interface RdmaCompletionListener extends EventListener {
   void onSuccess(ByteBuffer buf);
   void onFailure(Throwable exception);

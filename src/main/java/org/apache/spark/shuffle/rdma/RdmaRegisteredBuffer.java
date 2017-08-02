@@ -18,8 +18,6 @@
 package org.apache.spark.shuffle.rdma;
 
 import com.ibm.disni.rdma.verbs.IbvPd;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -29,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class RdmaRegisteredBuffer {
   private RdmaBufferManager rdmaBufferManager = null;
   private RdmaBuffer rdmaBuffer;
-  private AtomicInteger refCount = new AtomicInteger(0);
+  private final AtomicInteger refCount = new AtomicInteger(0);
   private int blockOffset = 0;
 
   public RdmaRegisteredBuffer(RdmaBufferManager rdmaBufferManager, int length, boolean isAggBlock)
@@ -74,20 +72,31 @@ public class RdmaRegisteredBuffer {
     return rdmaBuffer.getLength();
   }
 
-  ByteBuffer getByteBuffer(int length) {
+  ByteBuffer getByteBuffer(int length) throws IOException {
     if (blockOffset + length > getRegisteredLength()) {
       throw new IllegalArgumentException("Exceeded Registered Length!");
     }
 
-    ByteBuffer byteBuffer = null;
+    Class<?> classDirectByteBuffer;
     try {
-      Class<?> classDirectByteBuffer = Class.forName("java.nio.DirectByteBuffer");
-      Constructor<?> constructor = classDirectByteBuffer.getDeclaredConstructor(long.class, int.class);
-      constructor.setAccessible(true);
-      byteBuffer = (ByteBuffer)constructor.newInstance(getRegisteredAddress() + (long)blockOffset, length);
+      classDirectByteBuffer = Class.forName("java.nio.DirectByteBuffer");
+    } catch (ClassNotFoundException e) {
+      throw new IOException("java.nio.DirectByteBuffer class not found");
+    }
+    Constructor<?> constructor;
+    try {
+      constructor = classDirectByteBuffer.getDeclaredConstructor(long.class, int.class);
+    } catch (NoSuchMethodException e) {
+      throw new IOException("java.nio.DirectByteBuffer constructor not found");
+    }
+    constructor.setAccessible(true);
+    ByteBuffer byteBuffer;
+    try {
+      byteBuffer = (ByteBuffer)constructor.newInstance(
+        getRegisteredAddress() + (long)blockOffset, length);
       blockOffset += length;
     } catch (Exception e) {
-      e.printStackTrace();
+      throw new IOException("java.nio.DirectByteBuffer exception: " + e.toString());
     }
 
     return byteBuffer;

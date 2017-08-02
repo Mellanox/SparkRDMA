@@ -44,10 +44,10 @@ class RdmaShufflePartitionWriter(rdmaShuffleManager: RdmaShuffleManager) extends
     if (rdmaShuffleManager.shuffleBlockResolver.reserveInMemoryBytes(blockSize)) {
       // TODO: these should be taken from the pool, for better reuse with shuffle read
       rdmaWriterBlocks += RdmaWriterBlockAndOffset(
-        new RdmaMemoryWriterBlock(rdmaShuffleManager.getPd, blockSize), 0)
+        new RdmaMemoryWriterBlock(rdmaShuffleManager.getIbvPd, blockSize), 0)
     } else {
       rdmaWriterBlocks += RdmaWriterBlockAndOffset(
-        new RdmaFileWriterBlock(rdmaShuffleManager.getPd, blockSize, generateFileName), 0)
+        new RdmaFileWriterBlock(rdmaShuffleManager.getIbvPd, blockSize, generateFileName), 0)
     }
   }
 

@@ -21,8 +21,6 @@ import org.apache.spark.network.buffer.ManagedBuffer;
 
 public abstract class RdmaManagedBuffer extends ManagedBuffer {
   public abstract long getAddress();
-
   public abstract int getLkey();
-
   public abstract long getLength();
 }
