@@ -59,6 +59,7 @@
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-core_2.11</artifactId>
       <version>${spark.version}</version>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>com.ibm.disni</groupId>
@@ -73,22 +74,40 @@
         <groupId>org.scala-tools</groupId>
         <artifactId>maven-scala-plugin</artifactId>
         <version>2.15.2</version>
-          <executions>
-            <execution>
-              <id>compile</id>
-                <goals>
-                  <goal>compile</goal>
-                </goals>
-                <phase>compile</phase>
-             </execution>
-             <execution>
-               <phase>process-resources</phase>
-               <goals>
-                 <goal>compile</goal>
-               </goals>
-             </execution>
-           </executions>
-       </plugin>
+        <executions>
+          <execution>
+            <id>compile</id>
+              <goals>
+                <goal>compile</goal>
+              </goals>
+            <phase>compile</phase>
+          </execution>
+          <execution>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <artifactId>maven-assembly-plugin</artifactId>
+        <version>3.0.0</version>
+        <configuration>
+          <descriptorRefs>
+            <descriptorRef>jar-with-dependencies</descriptorRef>
+          </descriptorRefs>
+        </configuration>
+        <executions>
+          <execution>
+            <id>make-assembly</id>
+            <phase>package</phase>
+            <goals>
+              <goal>single</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
 </project>
