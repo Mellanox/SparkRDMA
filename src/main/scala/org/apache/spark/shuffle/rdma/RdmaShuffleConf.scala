@@ -70,7 +70,7 @@ class RdmaShuffleConf(conf: SparkConf) {
     "shuffleWriteBlockSize", "4m", "4k", "512m")
   lazy val shuffleWriteMaxInMemoryStoragePerExecutor: Long = getRdmaConfSizeAsBytesInRange(
     "shuffleWriteMaxInMemoryStoragePerExecutor", "25g", "0", "10t")
-  // TODO: need to limit to machine memory?
+  // TODO: Limit to machine memory
 
   //
   // Shuffle reader configuration

@@ -21,8 +21,6 @@ import java.io.{File, InputStream}
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
-import scala.collection.mutable.ArrayBuffer
-
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
@@ -45,22 +43,20 @@ class RdmaChunkedPartitionAggShuffleData(shuffleId: Int, numPartitions: Int,
   def commitMapOutput(mapOutputByteBuffers : Array[RdmaChunkedByteBuffer], shuffleId: Int): Long = {
     val startTime = System.nanoTime()
     for ((buf, partitionId) <- mapOutputByteBuffers.zipWithIndex) {
-      write(buf.getChunks(), buf.length, shuffleId, partitionId)
+      write(buf.getChunks, buf.length, shuffleId, partitionId)
     }
 
     val remainingWriters = activeShuffleWriters.decrementAndGet()
     if (remainingWriters == 0) this.synchronized {
-      // TODO: we can use a map instead of foreach, and flatten
-      val rdmaPartitionLocations = new ArrayBuffer[RdmaPartitionLocation]
-      writers.zipWithIndex.foreach {
+      val rdmaPartitionLocations = writers.zipWithIndex.collect {
         case (writer: RdmaShufflePartitionWriter, partitionId: Int) =>
-          for (location <- writer.getLocations) {
-            rdmaPartitionLocations += new RdmaPartitionLocation(
+          for (location <- writer.getLocations) yield {
+            new RdmaPartitionLocation(
               rdmaShuffleManager.getLocalHostPort,
               partitionId,
               location)
           }
-      }
+      }.flatten
 
       rdmaShuffleManager.publishPartitionLocations(
         rdmaShuffleManager.rdmaShuffleConf.driverHost,
@@ -172,7 +168,7 @@ private[spark] class RdmaChunkedPartitionAggShuffleWriter[K, V](
 
         val rdmaChunkedByteBuffer = outputStreams(partitionId).toRdmaChunkedByteBuffer
         rdmaChunkedPartitionAggregationShuffleData.write(
-          rdmaChunkedByteBuffer.getChunks(),
+          rdmaChunkedByteBuffer.getChunks,
           rdmaChunkedByteBuffer.length,
           dep.shuffleId,
           partitionId)
@@ -180,9 +176,9 @@ private[spark] class RdmaChunkedPartitionAggShuffleWriter[K, V](
 
         // Recreate new streams from the recycled chunks
         outputStreams(partitionId) = new RdmaChunkedByteBufferOutputStream(shuffleWriteChunkSize,
-          rdmaChunkedByteBuffer.getRdmaBufferChunks())
+          rdmaChunkedByteBuffer.getRdmaBufferChunks)
         // TODO: do we really have to create new streams from scratch? not really, finish() on the
-        // compressed stream is enough, but not availiable on all compressors
+        // compressed stream is enough, but not available on all compressors
         compressedStreams(partitionId) = serializerManager.wrapForCompression(
           dummyShuffleBlockId, outputStreams(partitionId))
         serializationStreams(partitionId) = serializerInstance.serializeStream(
@@ -199,30 +195,26 @@ private[spark] class RdmaChunkedPartitionAggShuffleWriter[K, V](
   }
 
   override def stop(success: Boolean): Option[MapStatus] = {
-    try {
-      if (stopping) {
-        return None
-      }
-      stopping = true
-      if (success) {
-        serializationStreams.foreach(_.close())
+    if (stopping) {
+      return None
+    }
+    stopping = true
+    if (success) {
+      serializationStreams.foreach(_.close())
 
-        val lengths: Array[Long] = outputStreams.map { outputStream => outputStream.size }
-        lengths.foreach(writeMetrics.incBytesWritten)
+      val lengths: Array[Long] = outputStreams.map { outputStream => outputStream.size }
+      lengths.foreach(writeMetrics.incBytesWritten)
 
-        val arrBuffers = outputStreams.map { outputStream => outputStream.toRdmaChunkedByteBuffer }
-        val writeTime = rdmaChunkedPartitionAggregationShuffleData.commitMapOutput(arrBuffers,
-          dep.shuffleId)
-        writeMetrics.incWriteTime(writeTime)
+      val arrBuffers = outputStreams.map { outputStream => outputStream.toRdmaChunkedByteBuffer }
+      val writeTime = rdmaChunkedPartitionAggregationShuffleData.commitMapOutput(arrBuffers,
+        dep.shuffleId)
+      writeMetrics.incWriteTime(writeTime)
 
-        arrBuffers.foreach(_.dispose())
-        // TODO: these are wrong lengths - need accumulate
-        Some(MapStatus(blockManager.shuffleServerId, lengths))
-      } else {
-        None
-      }
-    } finally {
-      // TODO: ???
+      arrBuffers.foreach(_.dispose())
+      // TODO: these are wrong lengths - need to accumulate
+      Some(MapStatus(blockManager.shuffleServerId, lengths))
+    } else {
+      None
     }
   }
 }

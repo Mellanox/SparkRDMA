@@ -31,11 +31,11 @@ private[spark] class RdmaChunkedByteBuffer(var chunks: ArrayBuffer[(RdmaBuffer, 
 
   val length: Long = chunks.map(_._2.limit().asInstanceOf[Long]).sum
 
-  def getChunks(): Array[ByteBuffer] = {
+  def getChunks: Array[ByteBuffer] = {
     chunks.map(_._2).toArray
   }
 
-  def getRdmaBufferChunks(): ArrayBuffer[(RdmaBuffer, ByteBuffer)] = chunks
+  def getRdmaBufferChunks: ArrayBuffer[(RdmaBuffer, ByteBuffer)] = chunks
 
   def dispose(): Unit = {
     if (!disposed) {

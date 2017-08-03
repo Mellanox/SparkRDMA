@@ -23,18 +23,18 @@ import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import com.ibm.disni.util.NativeAffinity;
 
-public class RdmaThread implements Runnable {
+class RdmaThread implements Runnable {
   private static final Logger logger = LoggerFactory.getLogger(RdmaThread.class);
 
-  private RdmaChannel rdmaChannel;
-  private Thread thread = new Thread(this, "RDMA channel CQ processing thread");
-  private AtomicBoolean runThread  = new AtomicBoolean(false);
+  private final RdmaChannel rdmaChannel;
+  private final Thread thread = new Thread(this, "RdmaChannel CQ processing thread");
+  private final AtomicBoolean runThread  = new AtomicBoolean(false);
 
   RdmaThread(RdmaChannel rdmaChannel) {
     this.rdmaChannel = rdmaChannel;
   }
 
-  public synchronized void start() {
+  synchronized void start() {
     runThread.set(true);
     thread.start();
   }
@@ -53,7 +53,7 @@ public class RdmaThread implements Runnable {
     }
   }
 
-  public synchronized void stop() throws InterruptedException {
+  synchronized void stop() throws InterruptedException {
     if (runThread.getAndSet(false)) { thread.join(); }
   }
 }

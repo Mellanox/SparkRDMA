@@ -23,7 +23,6 @@ import java.util.concurrent.ConcurrentHashMap
 
 import com.ibm.disni.rdma.verbs.IbvPd
 import org.slf4j.LoggerFactory
-import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.collection.JavaConverters._
 import scala.concurrent.{Future, Promise}
@@ -46,7 +45,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   private var localHostPort: Option[HostPort] = None
   private var rdmaNode: Option[RdmaNode] = None
 
-  // TODO: we can keep in raw form in the driver
+  // TODO: Keep RdmaPartitionLocations in serialized form in the driver to save cpu and memory
   // TODO: naming is too confusing for this type
   case class PartitionLocation(locations: ArrayBuffer[RdmaPartitionLocation],
     promise: Option[Promise[Seq[RdmaPartitionLocation]]])
@@ -62,7 +61,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
               synchronized {
                 if (rdmaShuffleConf.shuffleWriterMethod ==
                   ShuffleWriterMethod.ChunkedPartitionAgg) {
-                  // TODO: very ugly, need to improve with a set or something
+                  // TODO: can be improved with a set or timestamps
                   var isExist = false
                   partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).locations.
                     foreach {
@@ -113,7 +112,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
               case rdmaChannel =>
                 executorMap.put(hostPort, rdmaChannel)
                 val buffers = new RdmaAnnounceExecutorsRpcMsg(
-                  executorMap.keys.asScala.to[mutable.ArrayBuffer]).toRdmaByteBufferManagedBuffers(
+                  executorMap.keys.asScala.toSeq).toRdmaByteBufferManagedBuffers(
                     getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
                 for (r <- executorMap.values.asScala) {
@@ -166,7 +165,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     }
     partitionLocationsMap.put(shuffleId, partitionHashMap)
 
-    // TODO: BypassMergeSortShuffleWriter is not supported since it is package private
+    // BypassMergeSortShuffleWriter is not supported since it is package private
     if (SortShuffleManager.canUseSerializedShuffle(dependency)) {
       // Otherwise, try to buffer map outputs in a serialized form, since this is more efficient:
       new SerializedShuffleHandle[K, V](
@@ -258,8 +257,8 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   }
 
   def publishPartitionLocations(host : String, port : Int, shuffleId: Int,
-      rdmaPartitionLocations: ArrayBuffer[RdmaPartitionLocation]) {
-    // TODO: we can avoid blocking by defining a future with onsuccess that will perform the send
+      rdmaPartitionLocations: Seq[RdmaPartitionLocation]) {
+    // TODO: Avoid blocking by defining a future with onsuccess that will perform the send
     val rdmaChannel = getRdmaChannel(host, port)
 
     val buffers = new RdmaPublishPartitionLocationsRpcMsg(shuffleId,
@@ -311,7 +310,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       length, false), length)
   }
 
-  // TODO: can we clean this disni dependency out?
+  // TODO: Clean this disni dependency out?
   def getIbvPd: IbvPd = rdmaNode.get.getRdmaBufferManager.getPd
 
   def getLocalHostPort: HostPort = localHostPort.get

@@ -31,10 +31,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class RdmaBufferManager {
 
   private class AllocatorStack {
-    private AtomicInteger totalAlloc;
-    private AtomicInteger currentSize;
-    private int length;
-    private ConcurrentLinkedDeque<RdmaBuffer> stack;
+    private final AtomicInteger totalAlloc;
+    private final AtomicInteger currentSize;
+    private final int length;
+    private final ConcurrentLinkedDeque<RdmaBuffer> stack;
 
     private AllocatorStack(int length) {
       stack = new ConcurrentLinkedDeque<>();
@@ -83,25 +83,22 @@ public class RdmaBufferManager {
     }
   }
 
-  private static final int MIN_BLOCK_SIZE = 16 * 1024;
-  private ConcurrentHashMap<Integer, AllocatorStack> stack_map;
-  private AllocatorStack recvStack;
-  private IbvPd pd = null;
   private static final Logger logger = LoggerFactory.getLogger(RdmaBufferManager.class);
+  private static final int MIN_BLOCK_SIZE = 16 * 1024;
+
+  private final ConcurrentHashMap<Integer, AllocatorStack> stack_map = new ConcurrentHashMap<>();
+  private final AllocatorStack recvStack;
+  private IbvPd pd = null;
   private Thread allocThread;
-  private AtomicBoolean isThreadRunning;
-  private AtomicBoolean allocMore;
-  private final ConcurrentLinkedDeque<Integer> lenBufQ;
+  private final AtomicBoolean isThreadRunning  = new AtomicBoolean(false);
+  private final AtomicBoolean allocMore = new AtomicBoolean(false);
+  private final ConcurrentLinkedDeque<Integer> lenBufQ = new ConcurrentLinkedDeque<>();
   private final boolean allocMoreThread = false;
 
   RdmaBufferManager(IbvPd pd, final boolean isExecutor, RdmaShuffleConf conf) throws IOException {
-    lenBufQ = new ConcurrentLinkedDeque<>();
-    allocMore = new AtomicBoolean(false);
-    isThreadRunning = new AtomicBoolean(false);
     long maxAggBlock = conf.maxAggBlock();
     this.pd = pd;
 
-    stack_map = new ConcurrentHashMap<>();
     recvStack = new AllocatorStack(conf.recvWrSize());
     for (int i = 0; i < conf.recvQueueDepth(); i++) {
       alloc(recvStack);
@@ -114,67 +111,64 @@ public class RdmaBufferManager {
     }
 
     if (allocMoreThread) {
-      allocThread = new Thread(new Runnable() {
-        @Override
-        public void run() {
-          AllocatorStack aStack = null;
+      allocThread = new Thread(() -> {
+        AllocatorStack aStack1 = null;
 
-          if (isExecutor) {
-            for (int sz = MIN_BLOCK_SIZE; sz < MIN_BLOCK_SIZE * 64; sz *= 2) {
-              try {
-                aStack = alloc(sz);
-              } catch (IOException e) {
-                e.printStackTrace();
-              }
-              if (aStack != null) {
-                for (int i = 0; i < 100; i++) {
-                  try {
-                    alloc(aStack);
-                  } catch (IOException e) {
-                    e.printStackTrace();
-                  }
+        if (isExecutor) {
+          for (int sz = MIN_BLOCK_SIZE; sz < MIN_BLOCK_SIZE * 64; sz *= 2) {
+            try {
+              aStack1 = alloc(sz);
+            } catch (IOException e) {
+              e.printStackTrace();
+            }
+            if (aStack1 != null) {
+              for (int i = 0; i < 100; i++) {
+                try {
+                  alloc(aStack1);
+                } catch (IOException e) {
+                  e.printStackTrace();
                 }
               }
-              logger.info("Pre-Allocate 100 of " + sz / 1024 + " KB-buffers");
             }
-            allocMore.set(false);
+            logger.info("Pre-Allocate 100 of " + sz / 1024 + " KB-buffers");
+          }
+          allocMore.set(false);
+        }
+
+        while (isThreadRunning.get()) {
+          try {
+            if (allocMore.get()) {
+              while (!lenBufQ.isEmpty()) {
+                long t2, t1;
+                int len = lenBufQ.pop();
+
+                aStack1 = alloc(len);
+
+                if (aStack1.getCurrentSize() > 99)
+                  continue;
+
+                t1 = System.nanoTime();
+                for (int i = 0; i < 50; i++)
+                  alloc(aStack1);
+                t2 = System.nanoTime();
+                logger.info("Allocate 50 more " + len / 1024 + " KB-buffers in " +
+                  (t2 - t1) / 1e6 + " ms totalAlloc " + aStack1.getTotalAlloc());
+              }
+              allocMore.set(false);
+            }
+          } catch (Exception e) {
+            e.printStackTrace();
           }
 
-          while (isThreadRunning.get()) {
-            try {
-              if (allocMore.get()) {
-                while (lenBufQ.isEmpty() == false) {
-                  long t2, t1;
-                  int len = lenBufQ.pop();
-
-                  aStack = alloc(len);
-
-                  if (aStack.getCurrentSize() > 99)
-                    continue;
-
-                  t1 = System.nanoTime();
-                  for (int i = 0; i < 50; i++)
-                    alloc(aStack);
-                  t2 = System.nanoTime();
-                  logger.info("Allocate 50 more " + len / 1024 + " KB-buffers in " +
-                    (t2 - t1) / 1e6 + " ms totalAlloc " + aStack.getTotalAlloc());
-                }
-                allocMore.set(false);
-              }
-            } catch (Exception e) {
-              e.printStackTrace();
+          try {
+            synchronized (allocMore) {
+              allocMore.wait();
             }
-
-            try {
-              synchronized (allocMore) {
-                allocMore.wait();
-              }
-            } catch (Exception e) {
-              e.printStackTrace();
-            }
+          } catch (Exception e) {
+            e.printStackTrace();
           }
         }
-      });
+      }, "RdmaBufferManager allocation thread");
 
       allocMore.set(true);
       isThreadRunning.set(true);
@@ -198,7 +192,7 @@ public class RdmaBufferManager {
     return aStack;
   }
 
-  void putRecv(RdmaBuffer buf) throws IOException {
+  void putRecv(RdmaBuffer buf) {
     recvStack.putStackBuf(buf);
   }
 

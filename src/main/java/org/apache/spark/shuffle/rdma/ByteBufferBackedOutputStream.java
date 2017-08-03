@@ -21,10 +21,10 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 
-public class ByteBufferBackedOutputStream extends OutputStream {
-  ByteBuffer buf;
+class ByteBufferBackedOutputStream extends OutputStream {
+  private final ByteBuffer buf;
 
-  public ByteBufferBackedOutputStream(ByteBuffer buf) {
+  ByteBufferBackedOutputStream(ByteBuffer buf) {
     this.buf = buf;
   }
 

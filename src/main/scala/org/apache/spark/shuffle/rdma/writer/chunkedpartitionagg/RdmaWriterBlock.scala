@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import com.ibm.disni.rdma.verbs.IbvPd
 import sun.nio.ch.DirectBuffer
 
-import org.apache.spark.shuffle.rdma.{ByteBufferBackedInputStream, RdmaBlockLocation, RdmaBuffer, RdmaSyncFile}
+import org.apache.spark.shuffle.rdma.{ByteBufferBackedInputStream, RdmaBlockLocation, RdmaBuffer, RdmaMappedFile}
 
 trait RdmaWriterBlock {
   def write(bufs: Array[ByteBuffer], offset: Long)
@@ -38,7 +38,7 @@ trait RdmaWriterBlock {
 
 class RdmaMemoryWriterBlock(ibvPd: IbvPd, blockSize: Long) extends RdmaWriterBlock {
   private val rdmaBuffer = new RdmaBuffer(ibvPd, blockSize.toInt)
-  private var actualReadableLength = new AtomicInteger(0)
+  private val actualReadableLength = new AtomicInteger(0)
 
   override def write(bufs: Array[ByteBuffer], offset: Long): Unit = {
     var curWriteOffset = offset
@@ -93,8 +93,8 @@ class RdmaMemoryWriterBlock(ibvPd: IbvPd, blockSize: Long) extends RdmaWriterBlo
 }
 
 class RdmaFileWriterBlock(ibvPd: IbvPd, blockSize: Long, file: File) extends RdmaWriterBlock {
-  private val rdmaSyncFile = new RdmaSyncFile(file, ibvPd, blockSize.toInt)
-  private var actualReadableLength = new AtomicInteger(0)
+  private val rdmaSyncFile = new RdmaMappedFile(file, ibvPd, blockSize.toInt)
+  private val actualReadableLength = new AtomicInteger(0)
 
   override def write(bufs: Array[ByteBuffer], offset: Long): Unit = {
     var curWriteOffset = offset

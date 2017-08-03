@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import scala.concurrent.ExecutionContext;
 
-public class RdmaNode {
+class RdmaNode {
   private static final Logger logger = LoggerFactory.getLogger(RdmaNode.class);
   private static final int BACKLOG = 128;
 
@@ -50,8 +50,8 @@ public class RdmaNode {
   private InetSocketAddress localInetSocketAddress;
   private InetAddress driverInetAddress;
 
-  public RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
-      final RdmaCompletionListener receiveListener) throws Exception {
+  RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
+           final RdmaCompletionListener receiveListener) throws Exception {
     this.receiveListener = receiveListener;
     this.conf = conf;
 
@@ -106,86 +106,83 @@ public class RdmaNode {
       throw ule;
     }
 
-    listeningThread = new Thread(new Runnable() {
-      @Override
-      public void run() {
-        logger.info("Starting RdmaNode Listening Server");
+    listeningThread = new Thread(() -> {
+      logger.info("Starting RdmaNode Listening Server");
 
-        while (runThread.get()) {
-          try {
-            // Wait for next event
-            RdmaCmEvent event = cmChannel.getCmEvent(50);
-            if (event == null) {
+      while (runThread.get()) {
+        try {
+          // Wait for next event
+          RdmaCmEvent event = cmChannel.getCmEvent(50);
+          if (event == null) {
+            continue;
+          }
+
+          RdmaCmId cmId = event.getConnIdPriv();
+          int eventType = event.getEvent();
+          event.ackEvent();
+
+          InetSocketAddress inetSocketAddress = (InetSocketAddress)cmId.getDestination();
+
+          // TODO: Handle reject on redundant connection, and manage mutual connect
+          if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_CONNECT_REQUEST.ordinal()) {
+            RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
+            if (rdmaChannel != null) {
+              logger.warn("Received a redundant RDMA connection request for " +
+                "inetSocketAddress: {}", inetSocketAddress);
               continue;
             }
 
-            RdmaCmId cmId = event.getConnIdPriv();
-            int eventType = event.getEvent();
-            event.ackEvent();
-
-            InetSocketAddress inetSocketAddress = (InetSocketAddress)cmId.getDestination();
-
-            // TODO: Handle reject on redundant connection, and manage mutual connect
-            if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_CONNECT_REQUEST.ordinal()) {
-              RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
-              if (rdmaChannel != null) {
-                logger.warn("Received a redundant RDMA connection request for " +
-                  "inetSocketAddress: {}", inetSocketAddress);
-                continue;
-              }
-
-              boolean isRpc = false;
-              if (driverInetAddress.equals(inetSocketAddress.getAddress()) ||
-                driverInetAddress.equals(localInetSocketAddress.getAddress())) {
-                isRpc = true;
-              }
-
-              rdmaChannel = new RdmaChannel(
-                conf,
-                rdmaBufferManager,
-                false,
-                true,
-                receiveListener,
-                cmId,
-                isRpc,
-                true);
-              if (passiveRdmaChannelMap.putIfAbsent(inetSocketAddress, rdmaChannel) != null) {
-                logger.warn("Race creating the RDMA Channel for inetSocketAddress: {}",
-                  inetSocketAddress);
-                rdmaChannel.stop();
-                continue;
-              }
-
-              rdmaChannel.accept();
-            } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_ESTABLISHED.ordinal()) {
-              RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
-              if (rdmaChannel == null) {
-                logger.warn("Received Established Event for inetSocketAddress not in the " +
-                  "passiveRdmaChannelMap, {}", inetSocketAddress);
-                continue;
-              }
-
-              rdmaChannel.finalizeConnection();
-            } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_DISCONNECTED.ordinal()) {
-              RdmaChannel rdmaChannel = passiveRdmaChannelMap.remove(inetSocketAddress);
-              if (rdmaChannel == null) {
-                logger.warn("Received Disconnect Event for inetSocketAddress not in the " +
-                  "passiveRdmaChannelMap, {}", inetSocketAddress);
-                continue;
-              }
-
-              rdmaChannel.stop();
-            } else {
-              logger.info("Unexpected CM Event {}", eventType);
+            boolean isRpc = false;
+            if (driverInetAddress.equals(inetSocketAddress.getAddress()) ||
+              driverInetAddress.equals(localInetSocketAddress.getAddress())) {
+              isRpc = true;
             }
-          } catch (Exception e) {
-            // TODO: Improve handling of exceptions
-            e.printStackTrace();
+
+            rdmaChannel = new RdmaChannel(
+              conf,
+              rdmaBufferManager,
+              false,
+              true,
+              receiveListener,
+              cmId,
+              isRpc,
+              true);
+            if (passiveRdmaChannelMap.putIfAbsent(inetSocketAddress, rdmaChannel) != null) {
+              logger.warn("Race creating the RDMA Channel for inetSocketAddress: {}",
+                inetSocketAddress);
+              rdmaChannel.stop();
+              continue;
+            }
+
+            rdmaChannel.accept();
+          } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_ESTABLISHED.ordinal()) {
+            RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
+            if (rdmaChannel == null) {
+              logger.warn("Received Established Event for inetSocketAddress not in the " +
+                "passiveRdmaChannelMap, {}", inetSocketAddress);
+              continue;
+            }
+
+            rdmaChannel.finalizeConnection();
+          } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_DISCONNECTED.ordinal()) {
+            RdmaChannel rdmaChannel = passiveRdmaChannelMap.remove(inetSocketAddress);
+            if (rdmaChannel == null) {
+              logger.warn("Received Disconnect Event for inetSocketAddress not in the " +
+                "passiveRdmaChannelMap, {}", inetSocketAddress);
+              continue;
+            }
+
+            rdmaChannel.stop();
+          } else {
+            logger.info("Unexpected CM Event {}", eventType);
           }
+        } catch (Exception e) {
+          // TODO: Improve handling of exceptions
+          e.printStackTrace();
         }
-        logger.info("Exiting RdmaNode Listening Server");
       }
-    });
+      logger.info("Exiting RdmaNode Listening Server");
+    }, "RdmaNode connection listening thread");
 
     runThread.set(true);
     listeningThread.start();
@@ -243,13 +240,11 @@ public class RdmaNode {
   }
 
   private FutureTask<Void> createFutureChannelStopTask(final RdmaChannel rdmaChannel) {
-    FutureTask<Void> futureTask = new FutureTask<>(new Runnable() {
-      public void run() {
-        try {
-          rdmaChannel.stop();
-        } catch (InterruptedException | IOException e) {
-          logger.warn("Exception caught while stopping an RdmaChannel", e);
-        }
+    FutureTask<Void> futureTask = new FutureTask<>(() -> {
+      try {
+        rdmaChannel.stop();
+      } catch (InterruptedException | IOException e) {
+        logger.warn("Exception caught while stopping an RdmaChannel", e);
       }
     }, null);
 
@@ -258,7 +253,7 @@ public class RdmaNode {
     return futureTask;
   }
 
-  public void stop() throws Exception {
+  void stop() throws Exception {
     // Spawn simultaneous disconnect tasks to speed up tear-down
     LinkedList<FutureTask<Void>> futureTaskList = new LinkedList<>();
     for (InetSocketAddress inetSocketAddress: activeRdmaChannelMap.keySet()) {

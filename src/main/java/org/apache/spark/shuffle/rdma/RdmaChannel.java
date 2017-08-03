@@ -76,9 +76,9 @@ public class RdmaChannel {
 
   private boolean isWarnedOnSendOverSubscription = false;
 
-  private int cpuVector = ++gCpuVector % Runtime.getRuntime().availableProcessors();
+  private final int cpuVector = ++gCpuVector % Runtime.getRuntime().availableProcessors();
 
-  private boolean isPassive;
+  private final boolean isPassive;
 
   private SVCReqNotify reqNotifyCall;
   private SVCPollCq svcPollCq;
@@ -95,7 +95,7 @@ public class RdmaChannel {
 
   private final ConcurrentHashMap<Integer, RdmaCompletionListener> listenerMap =
     new ConcurrentHashMap<>();
-  private AtomicInteger listenerIndex = new AtomicInteger(1); // 0 is reserved for null
+  private final AtomicInteger listenerIndex = new AtomicInteger(1); // 0 reserved for null
 
   RdmaChannel(
       RdmaShuffleConf conf,

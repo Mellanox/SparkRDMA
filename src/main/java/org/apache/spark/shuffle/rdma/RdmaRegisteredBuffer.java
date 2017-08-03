@@ -45,11 +45,11 @@ public class RdmaRegisteredBuffer {
     return rdmaBuffer.getLkey();
   }
 
-  public int retain() {
-    return refCount.incrementAndGet();
+  void retain() {
+    refCount.incrementAndGet();
   }
 
-  public int release() {
+  void release() {
     int count = refCount.decrementAndGet();
 
     if (count == 0) {
@@ -60,8 +60,6 @@ public class RdmaRegisteredBuffer {
       }
       rdmaBuffer = null;
     }
-
-    return count;
   }
 
   private long getRegisteredAddress() {

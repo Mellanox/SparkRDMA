@@ -29,17 +29,12 @@ import java.util.List;
 import com.ibm.disni.rdma.verbs.IbvMr;
 import com.ibm.disni.rdma.verbs.IbvPd;
 import com.ibm.disni.rdma.verbs.SVCRegMr;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import scala.Int;
 import sun.misc.Unsafe;
 import sun.nio.ch.DirectBuffer;
 import sun.nio.ch.FileChannelImpl;
 
-public class RdmaSyncFile {
-  private static final Logger logger = LoggerFactory.getLogger(RdmaSyncFile.class);
-
-  @SuppressWarnings("restriction")
+public class RdmaMappedFile {
   private static final Unsafe unsafe;
   private static final Method mmap;
   private static final Method unmmap;
@@ -56,12 +51,12 @@ public class RdmaSyncFile {
   private RdmaBlockLocation[] rdmaPartitionBlockLocations = null;
 
   class RdmaFileMapping {
-    IbvMr ibvMr;
-    long fileOffset;
-    long address;
-    long mapAddress;
-    long length;
-    long alignedLength;
+    final IbvMr ibvMr;
+    final long fileOffset;
+    final long address;
+    final long mapAddress;
+    final long length;
+    final long alignedLength;
 
     RdmaFileMapping(IbvMr ibvMr, long fileOffset, long address, long mapAddress, long length,
         long alignedLength) {
@@ -93,12 +88,12 @@ public class RdmaSyncFile {
     BYTE_ARRAY_OFFSET = unsafe.arrayBaseOffset(byte[].class);
   }
 
-  public RdmaSyncFile(File file, IbvPd ibvPd) throws IOException, InvocationTargetException,
+  RdmaMappedFile(File file, IbvPd ibvPd) throws IOException, InvocationTargetException,
       IllegalAccessException {
     this(file, ibvPd, file.length());
   }
 
-  public RdmaSyncFile(File file, IbvPd ibvPd, long fileLength) throws IOException,
+  public RdmaMappedFile(File file, IbvPd ibvPd, long fileLength) throws IOException,
       InvocationTargetException, IllegalAccessException {
     this.file = file;
     this.fileLength = fileLength;
@@ -117,7 +112,7 @@ public class RdmaSyncFile {
     file.deleteOnExit();
   }
 
-  public RdmaSyncFile(File file, IbvPd ibvPd, int chunkSize, long[] partitionLengths)
+  public RdmaMappedFile(File file, IbvPd ibvPd, int chunkSize, long[] partitionLengths)
       throws IOException, InvocationTargetException, IllegalAccessException {
     this.file = file;
     this.fileLength = file.length();

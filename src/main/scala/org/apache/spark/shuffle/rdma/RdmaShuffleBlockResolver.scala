@@ -20,9 +20,6 @@ package org.apache.spark.shuffle.rdma
 import java.io.{File, InputStream}
 import java.util.concurrent.ConcurrentHashMap
 
-import scala.collection.mutable.ArrayBuffer
-
-import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.shuffle.{BaseShuffleHandle, IndexShuffleBlockResolver}
@@ -33,7 +30,6 @@ import org.apache.spark.storage.ShuffleBlockId
 
 class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
     extends IndexShuffleBlockResolver(rdmaShuffleManager.conf) with Logging {
-  private lazy val blockManager = SparkEnv.get.blockManager
   private val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
 
   private val rdmaShuffleDataMap = new ConcurrentHashMap[Int, RdmaShuffleData]
@@ -99,7 +95,7 @@ class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
   def getLocalRdmaPartition(shuffleId: Int, partitionId : Int) : Seq[InputStream] = {
     rdmaShuffleDataMap.get(shuffleId) match {
       case r: RdmaShuffleData => r.getInputStreams(partitionId)
-      case null => new ArrayBuffer[InputStream]()
+      case null => Seq.empty
     }
   }
 }

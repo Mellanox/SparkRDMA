@@ -32,15 +32,13 @@ import java.nio.ByteBuffer;
 
 public class RdmaBuffer {
   private static final Logger logger = LoggerFactory.getLogger(RdmaBuffer.class);
+  private static final int BYTE_ARRAY_OFFSET;
+
   private IbvMr ibvMr = null;
   private final long address;
   private final int length;
 
-  @SuppressWarnings("restriction")
   private static final Unsafe unsafe;
-
-  public static final int BYTE_ARRAY_OFFSET;
-
   static {
     try {
       Field unsafeField = Unsafe.class.getDeclaredField("theUnsafe");
@@ -60,7 +58,7 @@ public class RdmaBuffer {
     register(ibvPd);
   }
 
-  public RdmaBuffer(int length) throws IOException {
+  public RdmaBuffer(int length) {
     address = unsafe.allocateMemory((long)length);
     this.length = length;
   }

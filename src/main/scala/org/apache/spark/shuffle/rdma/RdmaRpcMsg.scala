@@ -89,12 +89,12 @@ object RdmaRpcMsg extends Logging {
 
 class RdmaPublishPartitionLocationsRpcMsg(
     var shuffleId: Int,
-    var rdmaPartitionLocations: ArrayBuffer[RdmaPartitionLocation])
+    var rdmaPartitionLocations: Seq[RdmaPartitionLocation])
   extends RdmaRpcMsg {
   private final val overhead: Int = 1 + 4 // 1 for isLast bool per segment, + 4 for shuffleId
   var isLast = false
 
-  private def this() = this(0, new ArrayBuffer[RdmaPartitionLocation])  // For deserialization only
+  private def this() = this(0, null)  // For deserialization only
 
   override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.PublishPartitionLocations
 
@@ -137,9 +137,12 @@ class RdmaPublishPartitionLocationsRpcMsg(
   override protected def read(in: DataInputStream): Unit = {
     isLast = in.readBoolean()
     shuffleId = in.readInt()
+
+    val tmpRdmaPartitionLocations = new ArrayBuffer[RdmaPartitionLocation]
     scala.util.control.Exception.ignoring(classOf[EOFException]) {
-      while (true) rdmaPartitionLocations += RdmaPartitionLocation(in)
+      while (true) tmpRdmaPartitionLocations += RdmaPartitionLocation(in)
     }
+    rdmaPartitionLocations = tmpRdmaPartitionLocations
   }
 }
 
@@ -205,11 +208,7 @@ object RdmaFetchPartitionLocationsRpcMsg {
   }
 }
 
-class RdmaExecutorHelloRpcMsg(
-    var host: String,
-    var port: Int)
-  extends RdmaRpcMsg {
-
+class RdmaExecutorHelloRpcMsg(var host: String, var port: Int) extends RdmaRpcMsg {
   private def this() = this(null, 0)  // For deserialization only
 
   private var hostnameInUtf: Array[Byte] = _
@@ -253,17 +252,13 @@ object RdmaExecutorHelloRpcMsg {
   }
 }
 
-class RdmaAnnounceExecutorsRpcMsg(
-    var executorList: ArrayBuffer[HostPort])
-  extends RdmaRpcMsg {
-
-  private def this() = this(new ArrayBuffer[HostPort])  // For deserialization only
+class RdmaAnnounceExecutorsRpcMsg(var executorList: Seq[HostPort]) extends RdmaRpcMsg {
+  private def this() = this(null)  // For deserialization only
 
   override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.AnnounceExecutors
 
   override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
     var segmentSizes = new ArrayBuffer[Int]
-
     for (hostPort <- executorList) {
       val hostnameInUtf = hostPort.host.getBytes(Charset.forName("UTF-8"))
       val length = 2 + hostnameInUtf.length + 4
@@ -302,6 +297,7 @@ class RdmaAnnounceExecutorsRpcMsg(
   }
 
   override protected def read(in: DataInputStream): Unit = {
+    val tmpExecutorList = new ArrayBuffer[HostPort]
     scala.util.control.Exception.ignoring(classOf[EOFException]) {
       while (true) {
         val hostLength = in.readShort()
@@ -309,9 +305,10 @@ class RdmaAnnounceExecutorsRpcMsg(
         in.read(hostnameInUtf, 0, hostLength)
         val host = new String(hostnameInUtf, "UTF-8")
         val port = in.readInt()
-        executorList += HostPort(host, port)
+        tmpExecutorList += HostPort(host, port)
       }
     }
+    executorList = tmpExecutorList
   }
 }
 
