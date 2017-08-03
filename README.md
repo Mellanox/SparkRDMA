@@ -4,6 +4,20 @@ performing the shuffle phase of the Spark job.
 
 This open-source project is developed, maintained and supported by [Mellanox Technologies](http://www.mellanox.com).
 
+## Performance results
+Example performance speedup for HiBench TeraSort:
+![Alt text](https://user-images.githubusercontent.com/20062725/28947340-30d45c6a-7864-11e7-96ea-ca3cf505ce7a.png)
+
+Running TeraSort with SparkRDMA is x1.41 faster than standard Spark (runtime in seconds)
+
+Testbed:
+
+175GB Workload
+
+15 Workers, 2x Intel Xeon E5-2697 v3 @ 2.60GHz, 28 cores per Worker, 256GB RAM, non-flash storage (HDD)
+
+Mellanox ConnectX-4 network adapter with 100GbE RoCE fabric, connected with a Mellanox Spectrum switch
+
 ## Runtime requirements
 * Apache Spark 2.0.0 (more versions to be supported)
 * Java 8
