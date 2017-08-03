@@ -46,8 +46,8 @@ make install
 be added to either spark-defaults.conf or any runtime configuration file.  For client mode this **must** be added to spark-defaults.conf
 
 ```
-spark.driver.extraClassPath   /path/to/sparkRdmaPlugin/target/spark-rdma-1.0-jar-with-dependencies.jar
-spark.executor.extraClassPath /path/to/sparkRdmaPlugin/target/spark-rdma-1.0-jar-with-dependencies.jar
+spark.driver.extraClassPath   /path/to/SparkRDMA/target/spark-rdma-1.0-jar-with-dependencies.jar
+spark.executor.extraClassPath /path/to/SparkRDMA/target/spark-rdma-1.0-jar-with-dependencies.jar
 ```
 
 ## Running
