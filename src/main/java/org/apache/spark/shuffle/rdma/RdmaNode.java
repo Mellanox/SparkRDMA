@@ -109,10 +109,11 @@ class RdmaNode {
     listeningThread = new Thread(() -> {
       logger.info("Starting RdmaNode Listening Server");
 
+      final int teardownListenTimeout = conf.teardownListenTimeout();
       while (runThread.get()) {
         try {
           // Wait for next event
-          RdmaCmEvent event = cmChannel.getCmEvent(50);
+          RdmaCmEvent event = cmChannel.getCmEvent(teardownListenTimeout);
           if (event == null) {
             continue;
           }

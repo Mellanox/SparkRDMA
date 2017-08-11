@@ -44,6 +44,9 @@ public class RdmaChannel {
   private final RdmaBufferManager rdmaBufferManager;
   private IbvCompChannel compChannel = null;
   private RdmaEventChannel eventChannel = null;
+  private final int rdmaCmEventTimeout;
+  private final int teardownListenTimeout;
+  private final int resolvePathTimeout;
   private RdmaCmId cmId = null;
   private IbvCQ cq = null;
   private IbvQP qp = null;
@@ -133,6 +136,10 @@ public class RdmaChannel {
       this.postRecvWrArray = new PostRecvWr[recvDepth];
       this.recvWrSize = isRpc ? conf.recvWrSize() : 0;
     }
+
+    this.rdmaCmEventTimeout = conf.rdmaCmEventTimeout();
+    this.teardownListenTimeout = conf.teardownListenTimeout();
+    this.resolvePathTimeout = conf.resolvePathTimeout();
   }
 
   int getCpuVector() {
@@ -220,24 +227,23 @@ public class RdmaChannel {
     }
 
     // Resolve the addr
-    int timeout = 60; // TODO: configurable
     connectState.set(STATE_CONNECTING);
-    int err = cmId.resolveAddr(null, socketAddress, timeout);
+    int err = cmId.resolveAddr(null, socketAddress, resolvePathTimeout);
     if (err != 0) {
       throw new IOException("resolveAddr failed: " + err);
     }
 
-    // TODO: non infinite timeout
-    processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ADDR_RESOLVED.ordinal(), -1);
+    processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ADDR_RESOLVED.ordinal(),
+      rdmaCmEventTimeout);
 
     // Resolve the route
-    err = cmId.resolveRoute(timeout);
+    err = cmId.resolveRoute(resolvePathTimeout);
     if (err != 0) {
       throw new IOException("resolveRoute failed: " + err);
     }
 
-    // TODO: non infinite timeout
-    processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ROUTE_RESOLVED.ordinal(), -1);
+    processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ROUTE_RESOLVED.ordinal(),
+      rdmaCmEventTimeout);
 
     setupCommon();
 
@@ -255,8 +261,8 @@ public class RdmaChannel {
       throw new IOException("Active connect failed");
     }
 
-    // TODO: non infinite timeout
-    processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ESTABLISHED.ordinal(), -1);
+    processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ESTABLISHED.ordinal(),
+      rdmaCmEventTimeout);
     connectState.set(STATE_CONNECTED);
   }
 
@@ -822,7 +828,8 @@ public class RdmaChannel {
           logger.error("disconnect failed with errno: " + ret);
         } else if (!isPassive) {
           try {
-            processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_DISCONNECTED.ordinal(), 100);
+            processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_DISCONNECTED.ordinal(),
+              teardownListenTimeout);
           } catch (IOException e) {
             logger.warn("Failed to get RDMA_CM_EVENT_DISCONNECTED");
           }

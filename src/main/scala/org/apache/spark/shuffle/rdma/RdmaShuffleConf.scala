@@ -89,4 +89,8 @@ class RdmaShuffleConf(conf: SparkConf) {
   lazy val driverPort: Int = getRdmaConfIntInRange("driverPort", 0, 1025, 65535)
   lazy val executorPort: Int = getRdmaConfIntInRange("executorPort", 0, 1025, 65535)
   lazy val portMaxRetries: Int = conf.getInt("spark.port.maxRetries", 16)
+  lazy val rdmaCmEventTimeout: Int = getRdmaConfIntInRange("rdmaCmEventTimeout", 20000, -1, 60000)
+  lazy val teardownListenTimeout: Int = getRdmaConfIntInRange("teardownListenTimeout", 50, -1,
+    60000)
+  lazy val resolvePathTimeout: Int = getRdmaConfIntInRange("resolvePathTimeout", 2000, -1, 60000)
 }
