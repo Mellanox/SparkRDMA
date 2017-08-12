@@ -34,10 +34,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class RdmaChannel {
   private static final Logger logger = LoggerFactory.getLogger(RdmaChannel.class);
-  private final static int MAX_ACK_COUNT = 4;
-  private final static int POLL_CQ_LIST_SIZE = 16;
-  private final static int WRITE_SIGNAL_LIST_SIZE = 16;
-  private final static int ZERO_SIZED_RECV_WR_LIST_SIZE = 16;
+  private static final int MAX_ACK_COUNT = 4;
+  private static final int POLL_CQ_LIST_SIZE = 16;
+  private static final int WRITE_SIGNAL_LIST_SIZE = 16;
+  private static final int ZERO_SIZED_RECV_WR_LIST_SIZE = 16;
 
   private final RdmaCompletionListener receiveListener;
   private final RdmaBufferManager rdmaBufferManager;
@@ -627,7 +627,7 @@ public class RdmaChannel {
 
     LinkedList<IbvRecvWR> recvWrList = new LinkedList<>();
     for (int i = 0; i < recvDepth; i++) {
-      RdmaBuffer rdmaBuffer = rdmaBufferManager.getRecv();
+      RdmaBuffer rdmaBuffer = rdmaBufferManager.get(recvWrSize, false);
 
       IbvSge sge = new IbvSge();
       sge.setAddr(rdmaBuffer.getAddress());
@@ -846,7 +846,7 @@ public class RdmaChannel {
 
       if (recvWrSize > 0) {
         for (int i = 0; i < recvDepth; i++) {
-          rdmaBufferManager.putRecv(postRecvWrArray[i].rdmaBuf);
+          rdmaBufferManager.put(postRecvWrArray[i].rdmaBuf);
         }
       }
 

@@ -55,7 +55,7 @@ class RdmaNode {
   private int cpuIndex = 0;
 
   RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
-           final RdmaCompletionListener receiveListener) throws Exception {
+      final RdmaCompletionListener receiveListener) throws Exception {
     this.receiveListener = receiveListener;
     this.conf = conf;
     initCpuArrayList();
@@ -82,7 +82,7 @@ class RdmaNode {
           break;
         }
         logger.info("Failed to bind to port {} on iteration {}", bindPort, i);
-        bindPort = bindPort != 0 ? bindPort+1 : 0;
+        bindPort = bindPort != 0 ? bindPort + 1 : 0;
       }
       if (err != 0) {
         throw new IOException("Unable to bind, err: " + err);
