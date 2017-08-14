@@ -34,7 +34,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class RdmaChannel {
   private static final Logger logger = LoggerFactory.getLogger(RdmaChannel.class);
-  private static int gCpuVector = 0;
   private final static int MAX_ACK_COUNT = 4;
   private final static int POLL_CQ_LIST_SIZE = 16;
   private final static int WRITE_SIGNAL_LIST_SIZE = 16;
@@ -79,7 +78,7 @@ public class RdmaChannel {
 
   private boolean isWarnedOnSendOverSubscription = false;
 
-  private final int cpuVector = ++gCpuVector % Runtime.getRuntime().availableProcessors();
+  private final int cpuVector;
 
   private final boolean isPassive;
 
@@ -108,8 +107,10 @@ public class RdmaChannel {
       RdmaCompletionListener receiveListener,
       RdmaCmId cmId,
       boolean isRpc,
-      boolean isPassive) {
-    this(conf, rdmaBufferManager, needSends, needRecvs, receiveListener, isRpc, isPassive);
+      boolean isPassive,
+      int cpuVector) {
+    this(conf, rdmaBufferManager, needSends, needRecvs, receiveListener, isRpc, isPassive,
+      cpuVector);
     this.cmId = cmId;
   }
 
@@ -120,10 +121,12 @@ public class RdmaChannel {
       boolean needRecvs,
       RdmaCompletionListener receiveListener,
       boolean isRpc,
-      boolean isPassive) {
+      boolean isPassive,
+      int cpuVector) {
     this.receiveListener = receiveListener;
     this.rdmaBufferManager = rdmaBufferManager;
     this.isPassive = isPassive;
+    this.cpuVector = cpuVector;
 
     if (needSends) {
       this.sendDepth = conf.sendQueueDepth();

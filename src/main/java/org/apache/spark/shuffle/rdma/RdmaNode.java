@@ -24,8 +24,10 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.concurrent.*;
+import java.util.Random;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -49,11 +51,14 @@ class RdmaNode {
   private IbvPd ibvPd;
   private InetSocketAddress localInetSocketAddress;
   private InetAddress driverInetAddress;
+  private ArrayList<Integer> cpuArrayList;
+  private int cpuIndex = 0;
 
   RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
            final RdmaCompletionListener receiveListener) throws Exception {
     this.receiveListener = receiveListener;
     this.conf = conf;
+    initCpuArrayList();
 
     try {
       driverInetAddress = InetAddress.getByName(conf.driverHost());
@@ -147,7 +152,8 @@ class RdmaNode {
               receiveListener,
               cmId,
               isRpc,
-              true);
+              true,
+              getNextCpuVector());
             if (passiveRdmaChannelMap.putIfAbsent(inetSocketAddress, rdmaChannel) != null) {
               logger.warn("Race creating the RDMA Channel for inetSocketAddress: {}",
                 inetSocketAddress);
@@ -189,6 +195,53 @@ class RdmaNode {
     listeningThread.start();
   }
 
+  private void initCpuArrayList() {
+    logger.info("cpuList from configuration file: {}", conf.cpuList());
+
+    cpuArrayList = new ArrayList();
+    String[] cpuList = conf.cpuList().split(",");
+
+    for (int i = 0; i < cpuList.length; i++) {
+      String[] cpuRange = cpuList[i].split("-");
+      int cpuStart, cpuEnd;
+
+      try {
+        cpuStart = cpuEnd = Integer.parseInt(cpuRange[0].trim());
+        if (cpuRange.length > 1) {
+          cpuEnd = Integer.parseInt(cpuRange[1].trim());
+        }
+
+        if (cpuStart > cpuEnd || cpuEnd > Runtime.getRuntime().availableProcessors() - 1) {
+          logger.warn("Invalid cpuList!  start: {}, end: {}, avail: {}", cpuStart, cpuEnd,
+            Runtime.getRuntime().availableProcessors());
+          throw new NumberFormatException();
+        }
+      } catch (NumberFormatException e) {
+        logger.info("Empty or failure parsing the cpuList. Defaulting to all available CPUs");
+        cpuArrayList.clear();
+        break;
+      }
+
+      for (int curCpu = cpuStart; curCpu <= cpuEnd; curCpu++) {
+        int index = cpuArrayList.isEmpty() ? 0 : new Random().nextInt(cpuArrayList.size());
+        cpuArrayList.add(index, curCpu);
+      }
+    }
+
+    if (cpuArrayList.isEmpty()) {
+      for (int curCpu = 0; curCpu < Runtime.getRuntime().availableProcessors(); curCpu++) {
+        int index = cpuArrayList.isEmpty() ? 0 : new Random().nextInt(cpuArrayList.size());
+        cpuArrayList.add(index, curCpu);
+      }
+    }
+
+    logger.info("Using cpuList: {}", cpuArrayList);
+  }
+
+  private int getNextCpuVector() {
+    return cpuArrayList.get(cpuIndex++ % cpuArrayList.size());
+  }
+
   public RdmaBufferManager getRdmaBufferManager() { return rdmaBufferManager; }
 
   public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr)
@@ -205,7 +258,8 @@ class RdmaNode {
           false,
           receiveListener,
           false,
-          false);
+          false,
+          getNextCpuVector());
 
         RdmaChannel actualRdmaChannel = activeRdmaChannelMap.putIfAbsent(remoteAddr, rdmaChannel);
         if (actualRdmaChannel != null) {

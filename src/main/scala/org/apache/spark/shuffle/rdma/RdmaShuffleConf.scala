@@ -58,6 +58,11 @@ class RdmaShuffleConf(conf: SparkConf) {
   lazy val recvWrSize: Int = getRdmaConfSizeAsBytesInRange("recvWrSize", "4k", "0", "1m").toInt
 
   //
+  // CPU Affinity Settings
+  //
+  lazy val cpuList: String = getRdmaConfKey("cpuList", "")
+
+  //
   // Shuffle write configuration
   //
   lazy val shuffleWriterMethod: ShuffleWriterMethod = ShuffleWriterMethod.withNameOpt(
