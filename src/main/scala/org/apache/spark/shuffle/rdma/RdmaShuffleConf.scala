@@ -86,6 +86,13 @@ class RdmaShuffleConf(conf: SparkConf) {
     "maxBytesInFlight", "128m", "48m", "100g")
   lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "2m", "1g")
   lazy val maxAggPrealloc: Long = getRdmaConfSizeAsBytesInRange("maxAggPrealloc", "0", "0", "10g")
+  // Remote fetch block statistics
+  lazy val collectShuffleReaderStats: Boolean = conf.getBoolean(
+    toRdmaConfKey("collectShuffleReaderStats"),
+    defaultValue = false)
+  lazy val fetchTimeBucketSizeInMs: Int = getRdmaConfIntInRange("fetchTimeBucketSizeInMs", 300, 5,
+    60000)
+  lazy val fetchTimeNumBuckets: Int = getRdmaConfIntInRange("fetchTimeNumBuckets", 5, 2, 100)
 
   //
   // Addressing and connection configuration

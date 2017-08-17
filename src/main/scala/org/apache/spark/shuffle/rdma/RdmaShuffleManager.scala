@@ -52,6 +52,14 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   private val partitionLocationsMap =
     new ConcurrentHashMap[Int, ConcurrentHashMap[Int, PartitionLocation]]
 
+  val rdmaShuffleReaderStats: RdmaShuffleReaderStats = {
+    if (rdmaShuffleConf.collectShuffleReaderStats) {
+      new RdmaShuffleReaderStats(rdmaShuffleConf)
+    } else {
+      null
+    }
+  }
+
   val receiveListener = new RdmaCompletionListener {
     override def onSuccess(buf: ByteBuffer): Unit = {
       RdmaRpcMsg(buf) match {
@@ -249,6 +257,9 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   }
 
   override def stop(): Unit = {
+    if (rdmaShuffleReaderStats != null) {
+      rdmaShuffleReaderStats.printRemoteFetchHistogram()
+    }
     shuffleBlockResolver.stop()
     rdmaNode match {
       case Some(x) => x.stop()

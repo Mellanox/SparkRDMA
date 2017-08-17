@@ -97,6 +97,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
   }
 
   private[this] def startAsyncFetches() {
+    val rdmaShuffleReaderStats = rdmaShuffleManager.rdmaShuffleReaderStats
     val startRemotePartitionLocationFetch = System.currentTimeMillis()
     // TODO: Aggregate await into a single future
     val groupedRemoteRdmaPartitionLocations = {
@@ -147,6 +148,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
         // TODO: Avoid the thread with something more lightweight
         val fetchThread = new Thread("RdmaShuffleFetcherIterator thread") {
           override def run() {
+            val startRemoteFetchTime = System.currentTimeMillis()
             val rdmaChannel = rdmaShuffleManager.getRdmaChannel(hostPort.host, hostPort.port)
             // Allocate a buffer for the incoming data while connection is established/retrieved
             val buf = rdmaShuffleManager.getRdmaByteBufferManagedBuffer(
@@ -161,6 +163,10 @@ private[spark] final class RdmaShuffleFetcherIterator(
                     val inputStream = new BufferReleasingInputStream(buf.createInputStream(), buf)
                     // TODO: startPartition may only be one of the partitions to report
                     resultsQueue.put(SuccessFetchResult(startPartition, hostPort, inputStream))
+                    if (rdmaShuffleReaderStats != null) {
+                      rdmaShuffleReaderStats.updateRemoteFetchHistogram(hostPort,
+                        (System.currentTimeMillis() - startRemoteFetchTime).toInt)
+                    }
                   } else {
                     buf.release()
                   }
