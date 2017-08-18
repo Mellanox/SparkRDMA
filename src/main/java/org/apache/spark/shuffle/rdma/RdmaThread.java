@@ -27,11 +27,13 @@ class RdmaThread implements Runnable {
   private static final Logger logger = LoggerFactory.getLogger(RdmaThread.class);
 
   private final RdmaChannel rdmaChannel;
+  private final int cpuVector;
   private final Thread thread = new Thread(this, "RdmaChannel CQ processing thread");
   private final AtomicBoolean runThread  = new AtomicBoolean(false);
 
-  RdmaThread(RdmaChannel rdmaChannel) {
+  RdmaThread(RdmaChannel rdmaChannel, int cpuVector) {
     this.rdmaChannel = rdmaChannel;
+    this.cpuVector = cpuVector;
   }
 
   synchronized void start() {
@@ -40,7 +42,7 @@ class RdmaThread implements Runnable {
   }
 
   public void run() {
-    long affinity = 1L << rdmaChannel.getCpuVector();
+    long affinity = 1L << cpuVector;
     NativeAffinity.setAffinity(affinity);
 
     boolean isStillProcessing = false;

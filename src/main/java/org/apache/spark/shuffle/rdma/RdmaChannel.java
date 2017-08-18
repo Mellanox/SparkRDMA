@@ -145,10 +145,6 @@ public class RdmaChannel {
     this.resolvePathTimeout = conf.resolvePathTimeout();
   }
 
-  int getCpuVector() {
-    return cpuVector;
-  }
-
   private int putListener(RdmaCompletionListener listener) {
     int index = listenerIndex.getAndIncrement();
     RdmaCompletionListener retListener = listenerMap.put(index, listener);
@@ -167,19 +163,17 @@ public class RdmaChannel {
   }
 
   private void setupCommon() throws IOException {
-    IbvContext ibCxt = cmId.getVerbs();
-    if (ibCxt == null) {
+    IbvContext ibvContext = cmId.getVerbs();
+    if (ibvContext == null) {
       throw new IOException("Failed to get the context from the event");
     }
 
-    compChannel = ibCxt.createCompChannel();
+    compChannel = ibvContext.createCompChannel();
     if (compChannel == null) {
       throw new IOException("Failed to create the completion channel");
     }
 
-    logger.info("Using cpuVector: " + cpuVector);
-
-    cq = ibCxt.createCQ(compChannel, sendDepth + recvDepth, cpuVector);
+    cq = ibvContext.createCQ(compChannel, sendDepth + recvDepth, cpuVector);
     if (cq == null) {
       throw new IOException("Create CQ failed");
     }
@@ -213,7 +207,7 @@ public class RdmaChannel {
       initRecvs();
     }
 
-    rdmaThread = new RdmaThread(this);
+    rdmaThread = new RdmaThread(this, cpuVector);
     rdmaThread.start();
   }
 

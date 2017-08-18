@@ -51,14 +51,13 @@ class RdmaNode {
   private IbvPd ibvPd;
   private InetSocketAddress localInetSocketAddress;
   private InetAddress driverInetAddress;
-  private ArrayList<Integer> cpuArrayList;
+  private final ArrayList<Integer> cpuArrayList = new ArrayList<>();
   private int cpuIndex = 0;
 
   RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
       final RdmaCompletionListener receiveListener) throws Exception {
     this.receiveListener = receiveListener;
     this.conf = conf;
-    initCpuArrayList();
 
     try {
       driverInetAddress = InetAddress.getByName(conf.driverHost());
@@ -87,6 +86,8 @@ class RdmaNode {
       if (err != 0) {
         throw new IOException("Unable to bind, err: " + err);
       }
+
+      initCpuArrayList();
 
       err = listenerRdmaCmId.listen(BACKLOG);
       if (err != 0) {
@@ -195,25 +196,38 @@ class RdmaNode {
     listeningThread.start();
   }
 
-  private void initCpuArrayList() {
+  private void initCpuArrayList() throws IOException {
     logger.info("cpuList from configuration file: {}", conf.cpuList());
 
-    cpuArrayList = new ArrayList();
-    String[] cpuList = conf.cpuList().split(",");
+    java.util.function.Consumer<Integer> addCpuToList = (cpu) -> {
+      // Add CPUs to the list while shuffling the order of the list, so that multiple RdmaNodes on
+      // this machine will have a better change to get different CPUs assigned to them
+      cpuArrayList.add(
+        cpuArrayList.isEmpty() ? 0 : new Random().nextInt(cpuArrayList.size()),
+        cpu);
+    };
 
-    for (int i = 0; i < cpuList.length; i++) {
-      String[] cpuRange = cpuList[i].split("-");
+    final int maxCpu = Runtime.getRuntime().availableProcessors() - 1;
+    final int maxUsableCpu = Math.min(Runtime.getRuntime().availableProcessors(),
+      listenerRdmaCmId.getVerbs().getNumCompVectors()) - 1;
+    if (maxUsableCpu < maxCpu - 1) {
+      logger.warn("IbvContext supports only " + (maxUsableCpu + 1) + " CPU cores, while there are" +
+        " " + (maxCpu + 1) + " CPU cores in the system. This may lead to under-utilization of the" +
+        " system's CPU cores. This limitation may be adjustable in the RDMA device configuration.");
+    }
+
+    for (String cpuRange : conf.cpuList().split(",")) {
+      final String[] cpuRangeArray = cpuRange.split("-");
       int cpuStart, cpuEnd;
 
       try {
-        cpuStart = cpuEnd = Integer.parseInt(cpuRange[0].trim());
-        if (cpuRange.length > 1) {
-          cpuEnd = Integer.parseInt(cpuRange[1].trim());
+        cpuStart = cpuEnd = Integer.parseInt(cpuRangeArray[0].trim());
+        if (cpuRangeArray.length > 1) {
+          cpuEnd = Integer.parseInt(cpuRangeArray[1].trim());
         }
 
-        if (cpuStart > cpuEnd || cpuEnd > Runtime.getRuntime().availableProcessors() - 1) {
-          logger.warn("Invalid cpuList!  start: {}, end: {}, avail: {}", cpuStart, cpuEnd,
-            Runtime.getRuntime().availableProcessors());
+        if (cpuStart > cpuEnd || cpuEnd > maxCpu) {
+          logger.warn("Invalid cpuList!  start: {}, end: {}, max: {}", cpuStart, cpuEnd, maxCpu);
           throw new NumberFormatException();
         }
       } catch (NumberFormatException e) {
@@ -222,16 +236,14 @@ class RdmaNode {
         break;
       }
 
-      for (int curCpu = cpuStart; curCpu <= cpuEnd; curCpu++) {
-        int index = cpuArrayList.isEmpty() ? 0 : new Random().nextInt(cpuArrayList.size());
-        cpuArrayList.add(index, curCpu);
+      for (int cpu = cpuStart; cpu <= Math.min(maxUsableCpu, cpuEnd); cpu++) {
+        addCpuToList.accept(cpu);
       }
     }
 
     if (cpuArrayList.isEmpty()) {
-      for (int curCpu = 0; curCpu < Runtime.getRuntime().availableProcessors(); curCpu++) {
-        int index = cpuArrayList.isEmpty() ? 0 : new Random().nextInt(cpuArrayList.size());
-        cpuArrayList.add(index, curCpu);
+      for (int cpu = 0; cpu <= maxUsableCpu; cpu++) {
+        addCpuToList.accept(cpu);
       }
     }
 
