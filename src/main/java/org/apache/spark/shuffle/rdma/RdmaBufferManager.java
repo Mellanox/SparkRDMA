@@ -90,7 +90,7 @@ public class RdmaBufferManager {
     }
   }
 
-  private AllocatorStack getOrCreateAllocatorStack(int length) throws IOException {
+  private AllocatorStack getOrCreateAllocatorStack(int length) {
     AllocatorStack allocatorStack = stack_map.get(length);
     if (allocatorStack == null) {
       stack_map.putIfAbsent(length, new AllocatorStack(length));
@@ -128,7 +128,7 @@ public class RdmaBufferManager {
 
   public IbvPd getPd() { return this.pd; }
 
-  void stop() throws InterruptedException {
+  void stop() {
     logger.info("Rdma buffers allocation statistics:");
     for (Integer size : stack_map.keySet()) {
       AllocatorStack allocatorStack = stack_map.remove(size);

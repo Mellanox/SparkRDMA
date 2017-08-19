@@ -277,7 +277,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
         throwFetchFailedException(partitionId, BlockManagerId(hostPort.host, hostPort.host,
           hostPort.port), e)
 
-      case SuccessFetchResult(partitionId, hostPort, inputStream) =>
+      case SuccessFetchResult(_, _, inputStream) =>
         inputStream
     }
   }
