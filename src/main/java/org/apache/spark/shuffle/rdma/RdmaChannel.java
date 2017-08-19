@@ -36,7 +36,6 @@ public class RdmaChannel {
   private static final Logger logger = LoggerFactory.getLogger(RdmaChannel.class);
   private static final int MAX_ACK_COUNT = 4;
   private static final int POLL_CQ_LIST_SIZE = 16;
-  private static final int WRITE_SIGNAL_LIST_SIZE = 16;
   private static final int ZERO_SIZED_RECV_WR_LIST_SIZE = 16;
 
   private final RdmaCompletionListener receiveListener;
@@ -95,9 +94,18 @@ public class RdmaChannel {
 
   private final AtomicInteger connectState = new AtomicInteger(STATE_IDLE);
 
-  private final ConcurrentHashMap<Integer, RdmaCompletionListener> listenerMap =
+  private class CompletionInfo {
+    final RdmaCompletionListener listener;
+    final int sendPermitsToReclaim;
+
+    CompletionInfo(RdmaCompletionListener listener, int sendPermitsToReclaim) {
+      this.listener = listener;
+      this.sendPermitsToReclaim = sendPermitsToReclaim;
+    }
+  }
+  private final ConcurrentHashMap<Integer, CompletionInfo> completionInfoMap =
     new ConcurrentHashMap<>();
-  private final AtomicInteger listenerIndex = new AtomicInteger(1); // 0 reserved for null
+  private final AtomicInteger completionInfoIndex = new AtomicInteger(1); // 0 reserved for null
 
   RdmaChannel(
       RdmaShuffleConf conf,
@@ -145,21 +153,17 @@ public class RdmaChannel {
     this.resolvePathTimeout = conf.resolvePathTimeout();
   }
 
-  private int putListener(RdmaCompletionListener listener) {
-    int index = listenerIndex.getAndIncrement();
-    RdmaCompletionListener retListener = listenerMap.put(index, listener);
-    if (retListener != null) {
-      throw new RuntimeException("Overflow of RdmaCompletionListeners");
+  private int putCompletionInfo(CompletionInfo completionInfo) {
+    int index = completionInfoIndex.getAndIncrement();
+    CompletionInfo retCompletionInfo = completionInfoMap.put(index, completionInfo);
+    if (retCompletionInfo != null) {
+      throw new RuntimeException("Overflow of CompletionInfos");
     }
     return index;
   }
 
-  private RdmaCompletionListener getListener(int index) {
-    return listenerMap.get(index);
-  }
-
-  private void removeListener(int index) {
-    listenerMap.remove(index);
+  private CompletionInfo removeCompletionInfo(int index) {
+    return completionInfoMap.remove(index);
   }
 
   private void setupCommon() throws IOException {
@@ -313,92 +317,6 @@ public class RdmaChannel {
     }
   }
 
-  private IbvSendWR prepareRdmaWriteWR(
-      long fromAddr,
-      int lKey,
-      int size,
-      long toAddr,
-      int rKey,
-      boolean signaled,
-      long wrId) {
-    LinkedList<IbvSge> sendSgeList = new LinkedList<>();
-    IbvSge sendSge = new IbvSge();
-    sendSgeList.add(sendSge);
-
-    IbvSendWR sendWr = new IbvSendWR();
-    sendWr.setOpcode(IbvSendWR.IbvWrOcode.IBV_WR_RDMA_WRITE.ordinal());
-    if (signaled) {
-      sendWr.setSend_flags(IbvSendWR.IBV_SEND_SIGNALED);
-      // TODO: missing wrid mapping to listener
-      sendWr.setWr_id(wrId);
-    }
-    sendWr.setSg_list(sendSgeList);
-
-    sendSge.setAddr(fromAddr);
-    sendSge.setLength(size);
-    sendSge.setLkey(lKey);
-
-    sendWr.getRdma().setRemote_addr(toAddr);
-    sendWr.getRdma().setRkey(rKey);
-
-    return sendWr;
-  }
-
-  private IbvSendWR prepareRdmaWriteImmWR(
-      int imm_data,
-      long fromAddr,
-      int lKey,
-      int size,
-      long toAddr,
-      int rKey,
-      boolean signaled,
-      long wrId) {
-    IbvSendWR sendWr = prepareRdmaWriteWR(fromAddr, lKey, size, toAddr, rKey, signaled, wrId);
-    sendWr.setOpcode(IbvSendWR.IbvWrOcode.IBV_WR_RDMA_WRITE_WITH_IMM.ordinal());
-    sendWr.setImm_data(imm_data);
-
-    return sendWr;
-  }
-
-  private LinkedList<IbvSendWR> prepareRdmaWriteWRList(
-      RdmaManagedBuffer[] srcRdmaManagedBuffers,
-      long[] dstVAddresses,
-      int[] dstRKeys,
-      int dstListenerIndex) {
-    LinkedList<IbvSendWR> sendWRList = new LinkedList<>();
-
-    for (int i = 0; i < srcRdmaManagedBuffers.length - 1; i++) {
-      int credit = ((i + 1) % WRITE_SIGNAL_LIST_SIZE == 0) ? WRITE_SIGNAL_LIST_SIZE : 0;
-
-      IbvSendWR sendWr = prepareRdmaWriteWR(
-        srcRdmaManagedBuffers[i].getAddress(),
-        srcRdmaManagedBuffers[i].getLkey(),
-        (int) srcRdmaManagedBuffers[i].size(),
-        dstVAddresses[i],
-        dstRKeys[i],
-        credit != 0,
-        credit);
-      sendWRList.add(sendWr);
-    }
-
-    // Signal is requested only for the last WR to reduce overhead
-    // wrId for the last WR will contain the length of the post list, for putting back in the
-    // semaphore later. Also, immediate data is used only for the last WR to reduce recv processing
-    // overhead on requestor side
-    IbvSendWR sendWr = prepareRdmaWriteImmWR(
-      dstListenerIndex,
-      srcRdmaManagedBuffers[srcRdmaManagedBuffers.length - 1].getAddress(),
-      srcRdmaManagedBuffers[srcRdmaManagedBuffers.length - 1].getLkey(),
-      (int) srcRdmaManagedBuffers[srcRdmaManagedBuffers.length - 1].size(),
-      dstVAddresses[srcRdmaManagedBuffers.length - 1],
-      dstRKeys[srcRdmaManagedBuffers.length - 1],
-      true,
-      (srcRdmaManagedBuffers.length - 1 % WRITE_SIGNAL_LIST_SIZE) + 1);
-    sendWRList.add(sendWr);
-
-    return sendWRList;
-  }
-
   private void rdmaPostWRList(LinkedList<IbvSendWR> sendWRList) throws IOException {
     if (qpIsErr) {
       throw new IOException("QP is in error state, can't post new requests");
@@ -436,41 +354,12 @@ public class RdmaChannel {
     }
   }
 
-  void rdmaWriteInQueue(
-      RdmaManagedBuffer[] srcRdmaManagedBuffers,
-      long[] dstVAddresses,
-      int[] dstRKeys,
-      int dstListenerIndex) throws IOException {
-    if (srcRdmaManagedBuffers.length > sendDepth) {
-      String err = "Tried to send an RDMA WR List that is longer (" + srcRdmaManagedBuffers.length +
-        ") than the queue size - Please set a larger value to spark.shuffle.io.rdmaSendDepth";
-      logger.error(err);
-      throw new IOException(err);
-    }
-
-    rdmaPostWRListInQueue(prepareRdmaWriteWRList(srcRdmaManagedBuffers, dstVAddresses, dstRKeys,
-      dstListenerIndex));
-  }
-
-  void rdmaWriteInQueue(
-      RdmaManagedBuffer srcRdmaManagedBuffer,
-      long dstVAddress,
-      int dstRKey,
-      int dstListenerIndex) throws Exception {
-    rdmaWriteInQueue(
-      new RdmaManagedBuffer[] {srcRdmaManagedBuffer},
-      new long[] { dstVAddress },
-      new int[] { dstRKey },
-      dstListenerIndex);
-  }
-
   void rdmaReadInQueue(RdmaCompletionListener listener, long localAddress, int lKey,
       int sizes[], long[] remoteAddresses, int[] rKeys) throws IOException {
     if (qpIsErr) {
       throw new IOException("QP is in error state, can't post new requests");
     }
 
-    // TODO: Can further optimize with only one signal as in write
     long offset = 0;
     LinkedList<IbvSendWR> readWRList = new LinkedList<>();
     for (int i = 0; i < remoteAddresses.length; i++) {
@@ -485,33 +374,19 @@ public class RdmaChannel {
 
       IbvSendWR readWr = new IbvSendWR();
       readWr.setOpcode(IbvSendWR.IbvWrOcode.IBV_WR_RDMA_READ.ordinal());
-      readWr.setSend_flags(IbvSendWR.IBV_SEND_SIGNALED);
       readWr.setSg_list(readSgeList);
       readWr.getRdma().setRemote_addr(remoteAddresses[i]);
       readWr.getRdma().setRkey(rKeys[i]);
 
-      if (i != remoteAddresses.length - 1) {
-        readWr.setWr_id(0);
-      } else {
-        int listenerId = putListener(listener);
-        readWr.setWr_id(listenerId);
-      }
-
       readWRList.add(readWr);
     }
 
-    rdmaPostWRListInQueue(readWRList);
-  }
+    readWRList.getLast().setSend_flags(IbvSendWR.IBV_SEND_SIGNALED);
+    int completionInfoId = putCompletionInfo(
+      new CompletionInfo(listener, remoteAddresses.length));
+    readWRList.getLast().setWr_id(completionInfoId);
 
-  void rdmaReadInQueue(RdmaCompletionListener listener, long localAddress, int lKey,
-      int size, long remoteAddress, int rKey) throws IOException {
-    rdmaReadInQueue(
-      listener,
-      localAddress,
-      lKey,
-      new int[] { size },
-      new long[] { remoteAddress },
-      new int[] { rKey });
+    rdmaPostWRListInQueue(readWRList);
   }
 
   void rdmaSendInQueue(RdmaCompletionListener listener, long[] localAddresses, int[] lKeys,
@@ -520,7 +395,6 @@ public class RdmaChannel {
       throw new IOException("QP is in error state, can't post new requests");
     }
 
-    // TODO: Can further optimize with only one signal as in write
     LinkedList<IbvSendWR> sendWRList = new LinkedList<>();
     for (int i = 0; i < localAddresses.length; i++) {
       IbvSge sendSge = new IbvSge();
@@ -533,29 +407,17 @@ public class RdmaChannel {
 
       IbvSendWR sendWr = new IbvSendWR();
       sendWr.setOpcode(IbvSendWR.IbvWrOcode.IBV_WR_SEND.ordinal());
-      sendWr.setSend_flags(IbvSendWR.IBV_SEND_SIGNALED);
       sendWr.setSg_list(sendSgeList);
-
-      if (i != localAddresses.length - 1) {
-        sendWr.setWr_id(0);
-      } else {
-        int listenerId = putListener(listener);
-        sendWr.setWr_id(listenerId);
-      }
 
       sendWRList.add(sendWr);
     }
 
-    rdmaPostWRListInQueue(sendWRList);
-  }
+    sendWRList.getLast().setSend_flags(IbvSendWR.IBV_SEND_SIGNALED);
+    int completionInfoId = putCompletionInfo(
+      new CompletionInfo(listener, localAddresses.length));
+    sendWRList.getLast().setWr_id(completionInfoId);
 
-  public void rdmaSendInQueue(RdmaCompletionListener listener, long localAddress, int lKey,
-      int size) throws IOException {
-    rdmaSendInQueue(
-      listener,
-      new long[] { localAddress },
-      new int[] { lKey },
-      new int[] { size });
+    rdmaPostWRListInQueue(sendWRList);
   }
 
   private void initZeroSizeRecvs() throws IOException {
@@ -663,39 +525,21 @@ public class RdmaChannel {
             logger.error("Completion with Error:" + ibvWCs[i].getStatus());
           }
 
-          if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_SEND.getOpcode()) {
-            int listenerId = (int)ibvWCs[i].getWr_id();
-            RdmaCompletionListener listener = getListener(listenerId);
-            if (listener != null) {
-              removeListener(listenerId);
+          if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_SEND.getOpcode() ||
+              ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_RDMA_READ.getOpcode()) {
+            int completionInfoId = (int)ibvWCs[i].getWr_id();
+            CompletionInfo completionInfo = removeCompletionInfo(completionInfoId);
+            if (completionInfo != null) {
               if (wcSuccess) {
-                listener.onSuccess(null);
+                completionInfo.listener.onSuccess(null);
               } else {
-                listener.onFailure(null);
+                completionInfo.listener.onFailure(null);
               }
-            } else if (listenerId != 0) {
-              logger.error("Couldn't find the listener with index: {}", listenerId);
-            }
 
-            reclaimedSendPermits += 1;
-          } else if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_RDMA_WRITE.getOpcode()) {
-            // TODO: what about the listener?
-            reclaimedSendPermits += (int) ibvWCs[i].getWr_id();
-          } else if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_RDMA_READ.getOpcode()) {
-            int listenerId = (int)ibvWCs[i].getWr_id();
-            RdmaCompletionListener listener = getListener(listenerId);
-            if (listener != null) {
-              removeListener(listenerId);
-              if (wcSuccess) {
-                listener.onSuccess(null);
-              } else {
-                listener.onFailure(null);
-              }
-            } else if (listenerId != 0) {
-              logger.error("Couldn't find the listener with index: {}", listenerId);
+              reclaimedSendPermits += completionInfo.sendPermitsToReclaim;
+            } else {
+              logger.error("Couldn't find the listener with index: {}", completionInfoId);
             }
-
-            reclaimedSendPermits += 1;
           } else if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_RECV.getOpcode()) {
             int recvWrId = (int)ibvWCs[i].getWr_id();
             if (firstRecvWrIndex == -1) {
@@ -710,26 +554,6 @@ public class RdmaChannel {
               }
             } else {
               receiveListener.onFailure(null);
-            }
-
-            reclaimedRecvWrs += 1;
-          } else if (ibvWCs[i].getOpcode() ==
-            IbvWC.IbvWcOpcode.IBV_WC_RECV_RDMA_WITH_IMM.getOpcode()) {
-            // TODO: Is immediate data valid on failure?
-            if (!wcSuccess) {
-              continue;
-            }
-            if (firstRecvWrIndex == -1) {
-              firstRecvWrIndex = (int)ibvWCs[i].getWr_id();
-            }
-
-            int listenerId = ibvWCs[i].getImm_data();
-            RdmaCompletionListener listener = getListener(listenerId);
-            if (listener != null) {
-              removeListener(listenerId);
-              listener.onSuccess(null);
-            } else if (listenerId != 0){
-              logger.error("Couldn't find the listener with index: {}", listenerId);
             }
 
             reclaimedRecvWrs += 1;
