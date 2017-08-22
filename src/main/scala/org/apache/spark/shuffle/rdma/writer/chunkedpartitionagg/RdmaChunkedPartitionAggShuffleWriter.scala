@@ -17,17 +17,19 @@
 
 package org.apache.spark.shuffle.rdma.writer.chunkedpartitionagg
 
-import java.io.{File, InputStream}
+import java.io.{File, InputStream, OutputStream}
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicInteger
 
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
+import org.apache.spark.serializer.SerializerManager
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleWriter}
 import org.apache.spark.shuffle.rdma._
 import org.apache.spark.shuffle.rdma.writer.RdmaShuffleData
-import org.apache.spark.storage.ShuffleBlockId
+import org.apache.spark.shuffle.rdma.writer.chunkedpartitionagg.RdmaChunkedPartitionAggShuffleWriter.wrapStreamMethod
+import org.apache.spark.storage.{BlockId, ShuffleBlockId}
 
 class RdmaChunkedPartitionAggShuffleData(shuffleId: Int, numPartitions: Int,
     rdmaShuffleManager: RdmaShuffleManager) extends RdmaShuffleData {
@@ -113,8 +115,8 @@ private[spark] class RdmaChunkedPartitionAggShuffleWriter[K, V](
 
   private val dummyShuffleBlockId = ShuffleBlockId(0, 0, 0)
   private val compressedStreams = Array.tabulate(dep.partitioner.numPartitions) {
-    partitionId => serializerManager.wrapForCompression(
-      dummyShuffleBlockId, outputStreams(partitionId))
+    partitionId => wrapStreamMethod.invoke(serializerManager, dummyShuffleBlockId,
+      outputStreams(partitionId)).asInstanceOf[OutputStream]
   }
 
   private val serializationStreams = Array.tabulate(dep.partitioner.numPartitions) {
@@ -179,11 +181,10 @@ private[spark] class RdmaChunkedPartitionAggShuffleWriter[K, V](
           rdmaChunkedByteBuffer.getRdmaBufferChunks)
         // TODO: do we really have to create new streams from scratch? not really, finish() on the
         // compressed stream is enough, but not available on all compressors
-        compressedStreams(partitionId) = serializerManager.wrapForCompression(
-          dummyShuffleBlockId, outputStreams(partitionId))
+        compressedStreams(partitionId) = wrapStreamMethod.invoke(serializerManager,
+          dummyShuffleBlockId, outputStreams(partitionId)).asInstanceOf[OutputStream]
         serializationStreams(partitionId) = serializerInstance.serializeStream(
           compressedStreams(partitionId))
-
         writeTime += System.nanoTime() - startTime
       }
 
@@ -216,5 +217,17 @@ private[spark] class RdmaChunkedPartitionAggShuffleWriter[K, V](
     } else {
       None
     }
+  }
+}
+
+object RdmaChunkedPartitionAggShuffleWriter {
+  // Retrieve the correct function for backward compatibility between Spark versions:
+  // 2.0.x, 2.1.x and 2.2.x
+  private val wrapStreamMethod = if (SparkVersionSupport.minorVersion == 0) {
+    classOf[SerializerManager].getDeclaredMethod("wrapForCompression", classOf[BlockId],
+      classOf[OutputStream])
+  } else {
+    classOf[SerializerManager].getDeclaredMethod("wrapStream", classOf[BlockId],
+      classOf[OutputStream])
   }
 }

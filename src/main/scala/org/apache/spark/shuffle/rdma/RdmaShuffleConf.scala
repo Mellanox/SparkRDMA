@@ -17,7 +17,7 @@
 
 package org.apache.spark.shuffle.rdma
 
-import org.apache.spark.SparkConf
+import org.apache.spark.{SparkConf, SPARK_VERSION}
 import org.apache.spark.shuffle.rdma.ShuffleWriterMethod.ShuffleWriterMethod
 import org.apache.spark.util.Utils
 
@@ -25,6 +25,22 @@ object ShuffleWriterMethod extends Enumeration {
   type ShuffleWriterMethod = Value
   val Wrapper, ChunkedPartitionAgg = Value
   def withNameOpt(s: String): Option[Value] = values.find(_.toString == s)
+}
+
+object SparkVersionSupport {
+  private val versionRegex = """^(\d+)\.(\d+)(\..*)?$""".r
+  val majorVersion = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
+    case Some(m) => m.group(1).toInt
+    case None => throw new IllegalArgumentException("Unable to parse Spark major version from" +
+      " version string: " + SPARK_VERSION)
+  }
+  if (majorVersion != 2)
+    throw new IllegalArgumentException("SparkRDMA only supports Spark versions 2.x")
+  val minorVersion = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
+    case Some(m) => m.group(2).toInt
+    case None => throw new IllegalArgumentException("Unable to parse Spark minor version from" +
+      " version string: " + SPARK_VERSION)
+  }
 }
 
 class RdmaShuffleConf(conf: SparkConf) {

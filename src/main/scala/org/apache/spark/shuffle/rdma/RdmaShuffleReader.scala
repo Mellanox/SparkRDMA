@@ -17,13 +17,16 @@
 
 package org.apache.spark.shuffle.rdma
 
+import java.io.InputStream
+
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.serializer.SerializerManager
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleReader}
-import org.apache.spark.storage.{BlockManager, ShuffleBlockId}
+import org.apache.spark.storage.{BlockId, BlockManager, ShuffleBlockId}
 import org.apache.spark.util.CompletionIterator
 import org.apache.spark.util.collection.ExternalSorter
+import org.apache.spark.shuffle.rdma.RdmaShuffleReader.wrapStreamMethod
 
 private[spark] class RdmaShuffleReader[K, C](
     handle: BaseShuffleHandle[K, _, C],
@@ -47,7 +50,10 @@ private[spark] class RdmaShuffleReader[K, C](
     val dummyShuffleBlockId = ShuffleBlockId(0, 0, 0)
     // Wrap the streams for compression based on configuration
     val wrappedStreams = rdmaShuffleFetcherIterator.map { inputStream =>
-      serializerManager.wrapForCompression(dummyShuffleBlockId, inputStream)
+      wrapStreamMethod.invoke(
+        serializerManager,
+        dummyShuffleBlockId,
+        inputStream).asInstanceOf[InputStream]
     }
 
     val serializerInstance = dep.serializer.newInstance()
@@ -104,5 +110,17 @@ private[spark] class RdmaShuffleReader[K, C](
       case None =>
         aggregatedIter
     }
+  }
+}
+
+object RdmaShuffleReader {
+  // Retrieve the correct function for backward compatibility between Spark versions:
+  // 2.0.x, 2.1.x and 2.2.x
+  private val wrapStreamMethod = if (SparkVersionSupport.minorVersion == 0) {
+    classOf[SerializerManager].getDeclaredMethod("wrapForCompression", classOf[BlockId],
+      classOf[InputStream])
+  } else {
+    classOf[SerializerManager].getDeclaredMethod("wrapStream", classOf[BlockId],
+      classOf[InputStream])
   }
 }
