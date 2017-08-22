@@ -65,7 +65,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
   private[this] val maxBytesInFlight = rdmaShuffleConf.maxBytesInFlight
   private[this] var curBytesInFlight = 0L
 
-  case class AggregatedPartitionGroup(var totalLength: Long,
+  case class AggregatedPartitionGroup(var totalLength: Int,
     locations: ListBuffer[RdmaBlockLocation])
   case class PendingFetch(fetchThread: Thread, aggregatedPartitionGroup: AggregatedPartitionGroup)
   private[this] val fetchesQueue = new mutable.Queue[PendingFetch]()
@@ -118,7 +118,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
     for ((hostPort, partitions) <- groupedRemoteRdmaPartitionLocations) {
       val aggregatedPartitionGroups = new ListBuffer[AggregatedPartitionGroup]
 
-      var curAggregatedPartitionGroup = AggregatedPartitionGroup(0L,
+      var curAggregatedPartitionGroup = AggregatedPartitionGroup(0,
         new ListBuffer[RdmaBlockLocation])
 
       for (blockLocation <- partitions.map(_.rdmaBlockLocation)) {
@@ -152,7 +152,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
             val rdmaChannel = rdmaShuffleManager.getRdmaChannel(hostPort.host, hostPort.port)
             // Allocate a buffer for the incoming data while connection is established/retrieved
             val buf = rdmaShuffleManager.getRdmaByteBufferManagedBuffer(
-              aggregatedPartitionGroup.totalLength.toInt)
+              aggregatedPartitionGroup.totalLength)
 
             val listener = new RdmaCompletionListener {
               override def onSuccess(paramBuf: ByteBuffer): Unit = {
@@ -189,7 +189,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
               listener,
               buf.getAddress,
               buf.getLkey,
-              aggregatedPartitionGroup.locations.map(_.length.toInt).toArray,
+              aggregatedPartitionGroup.locations.map(_.length).toArray,
               aggregatedPartitionGroup.locations.map(_.address).toArray,
               aggregatedPartitionGroup.locations.map(_.mKey).toArray)
           }
@@ -285,7 +285,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
   private def throwFetchFailedException(partitionId: Int,
       blockManagerId: BlockManagerId, e: Throwable) = {
     // TODO: Throw exceptions for all of the mapIds?
-    throw new FetchFailedException(blockManagerId, shuffleId.toInt, 0, partitionId, e)
+    throw new FetchFailedException(blockManagerId, shuffleId, 0, partitionId, e)
   }
 }
 

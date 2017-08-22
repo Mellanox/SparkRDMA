@@ -21,7 +21,7 @@ import java.io._
 import java.nio.charset.Charset
 
 case class HostPort(var host: String, var port: Int)
-case class RdmaBlockLocation(var address: Long, var length: Long, var mKey: Int)
+case class RdmaBlockLocation(var address: Long, var length: Int, var mKey: Int)
 
 class RdmaPartitionLocation(
     var hostPort: HostPort,
@@ -48,7 +48,7 @@ class RdmaPartitionLocation(
     out.writeInt(hostPort.port)
     out.writeInt(partitionId)
     out.writeLong(rdmaBlockLocation.address)
-    out.writeInt(rdmaBlockLocation.length.toInt)
+    out.writeInt(rdmaBlockLocation.length)
     out.writeInt(rdmaBlockLocation.mKey)
   }
 

@@ -93,16 +93,16 @@ class RdmaMemoryWriterBlock(ibvPd: IbvPd, blockSize: Long) extends RdmaWriterBlo
 }
 
 class RdmaFileWriterBlock(ibvPd: IbvPd, blockSize: Long, file: File) extends RdmaWriterBlock {
-  private val rdmaSyncFile = new RdmaMappedFile(file, ibvPd, blockSize.toInt)
+  private val rdmaMappedFile = new RdmaMappedFile(file, ibvPd, blockSize.toInt)
   private val actualReadableLength = new AtomicInteger(0)
 
   override def write(bufs: Array[ByteBuffer], offset: Long): Unit = {
     var curWriteOffset = offset
     for (buf <- bufs) {
       if (buf.isInstanceOf[DirectBuffer]) {
-        rdmaSyncFile.write(buf.asInstanceOf[DirectBuffer], 0, curWriteOffset, buf.limit())
+        rdmaMappedFile.write(buf.asInstanceOf[DirectBuffer], 0, curWriteOffset, buf.limit())
       } else if (buf.hasArray) {
-        rdmaSyncFile.write(buf.array(), 0, curWriteOffset, buf.limit())
+        rdmaMappedFile.write(buf.array(), 0, curWriteOffset, buf.limit())
       } else {
         throw new UnsupportedOperationException("Unsupported ByteBuffer")
       }
@@ -114,9 +114,9 @@ class RdmaFileWriterBlock(ibvPd: IbvPd, blockSize: Long, file: File) extends Rdm
 
   override def write(buf: ByteBuffer, offset: Long): Unit = {
     if (buf.isInstanceOf[DirectBuffer]) {
-      rdmaSyncFile.write(buf.asInstanceOf[DirectBuffer], 0, offset, buf.limit())
+      rdmaMappedFile.write(buf.asInstanceOf[DirectBuffer], 0, offset, buf.limit())
     } else if (buf.hasArray) {
-      rdmaSyncFile.write(buf.array(), 0, offset, buf.limit())
+      rdmaMappedFile.write(buf.array(), 0, offset, buf.limit())
     } else {
       throw new UnsupportedOperationException("Unsupported ByteBuffer")
     }
@@ -125,25 +125,25 @@ class RdmaFileWriterBlock(ibvPd: IbvPd, blockSize: Long, file: File) extends Rdm
   }
 
   override def write(byte: Integer, offset: Long): Unit = {
-    rdmaSyncFile.write(Array(byte.byteValue()), 0, offset, 1)
+    rdmaMappedFile.write(Array(byte.byteValue()), 0, offset, 1)
 
     actualReadableLength.addAndGet(1)
   }
 
   override def write(bytes: Array[Byte], offset: Long): Unit = {
-    rdmaSyncFile.write(bytes, 0, offset, bytes.length)
+    rdmaMappedFile.write(bytes, 0, offset, bytes.length)
 
     actualReadableLength.addAndGet(bytes.length)
   }
 
-  override def getLocation: RdmaBlockLocation = rdmaSyncFile.getRdmaBlockLocationForOffset(0,
+  override def getLocation: RdmaBlockLocation = rdmaMappedFile.getRdmaBlockLocationForOffset(0,
     actualReadableLength.get())
 
   override def getInputStream: InputStream = {
-    val buf = rdmaSyncFile.getByteBuffer
+    val buf = rdmaMappedFile.getByteBuffer
     buf.limit(actualReadableLength.get())
     new ByteBufferBackedInputStream(buf)
   }
 
-  override def dispose(): Unit = rdmaSyncFile.dispose()
+  override def dispose(): Unit = rdmaMappedFile.dispose()
 }

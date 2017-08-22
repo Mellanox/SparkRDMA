@@ -35,23 +35,23 @@ class RdmaWrapperShuffleData(
   numPartitions: Int,
   rdmaShuffleManager: RdmaShuffleManager) extends RdmaShuffleData {
 
-  private val rdmaSyncFileByMapId = new ConcurrentHashMap[Int, RdmaMappedFile]
+  private val rdmaMappedFileByMapId = new ConcurrentHashMap[Int, RdmaMappedFile]
 
   override def getInputStreams(partitionId: Int): Seq[InputStream] = {
-    rdmaSyncFileByMapId.asScala.map {
+    rdmaMappedFileByMapId.asScala.map {
       t: (Int, RdmaMappedFile) =>
         new ByteBufferBackedInputStream(t._2.getByteBufferForPartition(partitionId))
     }.toSeq
   }
 
-  override def dispose(): Unit = { rdmaSyncFileByMapId.asScala.foreach(_._2.dispose()) }
+  override def dispose(): Unit = { rdmaMappedFileByMapId.asScala.foreach(_._2.dispose()) }
 
   override def newShuffleWriter(): Unit = {}
 
-  def getRdmaSyncFileForMapId(mapId: Int): RdmaMappedFile = rdmaSyncFileByMapId.get(mapId)
+  def getRdmaMappedFileForMapId(mapId: Int): RdmaMappedFile = rdmaMappedFileByMapId.get(mapId)
 
   override def removeDataByMap(mapId: Int): Unit = {
-    val file = rdmaSyncFileByMapId.remove(mapId)
+    val file = rdmaMappedFileByMapId.remove(mapId)
     if (file != null) { file.dispose() }
   }
 
@@ -70,7 +70,7 @@ class RdmaWrapperShuffleData(
     val rdmaFile = new RdmaMappedFile(dataFile, rdmaShuffleManager.getIbvPd,
       rdmaShuffleManager.rdmaShuffleConf.shuffleWriteBlockSize.toInt, lengths)
 
-    val oldFile = rdmaSyncFileByMapId.put(mapId, rdmaFile)
+    val oldFile = rdmaMappedFileByMapId.put(mapId, rdmaFile)
     if (oldFile != null) { oldFile.dispose() }
   }
 }
@@ -116,12 +116,12 @@ class RdmaWrapperShuffleWriter[K, V, C](
       val rdmaShuffleManager = env.shuffleManager.asInstanceOf[RdmaShuffleManager]
       val localHostPort = rdmaShuffleManager.getLocalHostPort
       val dep = handle.dependency
-      val rdmaSyncFile = rdmaShuffleBlockResolver.getRdmaShuffleData(dep.shuffleId).
-        asInstanceOf[RdmaWrapperShuffleData].getRdmaSyncFileForMapId(mapId)
+      val rdmaMappedFile = rdmaShuffleBlockResolver.getRdmaShuffleData(dep.shuffleId).
+        asInstanceOf[RdmaWrapperShuffleData].getRdmaMappedFileForMapId(mapId)
 
       val rdmaPartitionLocations = {
         for (partitionId <- 0 until dep.partitioner.numPartitions;
-          rdmaBlockLocation = rdmaSyncFile.getRdmaBlockLocationForPartition(partitionId)
+          rdmaBlockLocation = rdmaMappedFile.getRdmaBlockLocationForPartition(partitionId)
           if rdmaBlockLocation.length > 0) yield {
           new RdmaPartitionLocation(localHostPort, partitionId, rdmaBlockLocation)
         }
