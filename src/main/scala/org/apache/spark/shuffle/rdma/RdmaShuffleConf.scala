@@ -69,8 +69,8 @@ class RdmaShuffleConf(conf: SparkConf) {
   //
   // RDMA resource parameters
   //
-  lazy val recvQueueDepth: Int = getRdmaConfIntInRange("recvQueueDepth", 2048, 0, 65535)
-  lazy val sendQueueDepth: Int = getRdmaConfIntInRange("sendQueueDepth", 4096, 0, 65535)
+  lazy val recvQueueDepth: Int = getRdmaConfIntInRange("recvQueueDepth", 2048, 256, 65535)
+  lazy val sendQueueDepth: Int = getRdmaConfIntInRange("sendQueueDepth", 4096, 256, 65535)
   lazy val recvWrSize: Int = getRdmaConfSizeAsBytesInRange("recvWrSize", "4k", "2k", "1m").toInt
 
   //
