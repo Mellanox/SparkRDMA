@@ -39,8 +39,7 @@ public class RdmaMappedFile {
   private static final Method mmap;
   private static final Method unmmap;
   private static final int BYTE_ARRAY_OFFSET;
-  private static final int ACCESS = IbvMr.IBV_ACCESS_LOCAL_WRITE | IbvMr.IBV_ACCESS_REMOTE_WRITE |
-    IbvMr.IBV_ACCESS_REMOTE_READ;
+  private static final int ACCESS = IbvMr.IBV_ACCESS_REMOTE_READ;
 
   private File file = null;
   private FileChannel fileChannel = null;
@@ -140,8 +139,6 @@ public class RdmaMappedFile {
     this.ibvPd = ibvPd;
 
     final RandomAccessFile backingFile = new RandomAccessFile(file, "rw");
-    backingFile.setLength(roundUpTo4096(this.fileLength));
-
     this.fileChannel = backingFile.getChannel();
 
     mapAndRegister(chunkSize, partitionLengths);
