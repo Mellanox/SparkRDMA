@@ -50,7 +50,9 @@ class RdmaThread implements Runnable {
       try {
         isStillProcessing = rdmaChannel.processCompletions();
       } catch (IOException ioe) {
-        logger.error("RdmaThread exception: {}", ioe);
+        logger.error("Exception in RdmaThread, aborting: " + ioe);
+        runThread.getAndSet(false);
+        isStillProcessing = false;
       }
     }
   }

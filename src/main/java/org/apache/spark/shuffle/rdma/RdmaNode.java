@@ -258,9 +258,14 @@ class RdmaNode {
 
   public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr)
       throws IOException, InterruptedException {
-    RdmaChannel rdmaChannel;
+    final long startTime = System.nanoTime();
+    final int maxConnectionAttempts = conf.maxConnectionAttempts();
+    final long connectionTimeout = maxConnectionAttempts * conf.rdmaCmEventTimeout();
+    long elapsedTime = 0;
+    int connectionAttempts = 0;
 
-    while (true) {
+    RdmaChannel rdmaChannel = null;
+    while ((connectionTimeout - elapsedTime) > 0) {
       rdmaChannel = activeRdmaChannelMap.get(remoteAddr);
       if (rdmaChannel == null) {
         rdmaChannel = new RdmaChannel(
@@ -278,23 +283,35 @@ class RdmaNode {
           rdmaChannel = actualRdmaChannel;
         } else {
           try {
-            long startTime = System.nanoTime();
             rdmaChannel.connect(remoteAddr);
             logger.info("Established connection to " + remoteAddr + " in " +
               (System.nanoTime() - startTime) / 1000000 + " ms");
           } catch (IOException e) {
-            logger.error("connect failed");
+            ++connectionAttempts;
             activeRdmaChannelMap.remove(remoteAddr, rdmaChannel);
             rdmaChannel.stop();
-            throw e;
+            if (connectionAttempts == maxConnectionAttempts) {
+              logger.error("Failed to connect to " + remoteAddr + " after " +
+                maxConnectionAttempts + " attempts, aborting");
+              throw e;
+            } else {
+              logger.error("Failed to connect to " + remoteAddr + ", attempt " +
+                connectionAttempts + " of " + maxConnectionAttempts + " with exception: " + e);
+              continue;
+            }
           }
         }
       }
 
-      // TODO: Need to handle failures, add timeout, handle dead connections
-      // TODO: Limit number of iterations in while loop
+      if (rdmaChannel.isError()) {
+        activeRdmaChannelMap.remove(remoteAddr, rdmaChannel);
+        rdmaChannel.stop();
+        continue;
+      }
+
       if (!rdmaChannel.isConnected()) {
         rdmaChannel.waitForActiveConnection();
+        elapsedTime = (System.nanoTime() - startTime) / 1000000;
       }
 
       if (rdmaChannel.isConnected()) {

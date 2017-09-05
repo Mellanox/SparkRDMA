@@ -121,4 +121,5 @@ class RdmaShuffleConf(conf: SparkConf) {
   lazy val teardownListenTimeout: Int = getRdmaConfIntInRange("teardownListenTimeout", 50, -1,
     60000)
   lazy val resolvePathTimeout: Int = getRdmaConfIntInRange("resolvePathTimeout", 2000, -1, 60000)
+  lazy val maxConnectionAttempts: Int = getRdmaConfIntInRange("maxConnectionAttempts", 5, 1, 100)
 }

@@ -566,6 +566,11 @@ public class RdmaChannel {
       }
     }
 
+    if (qpIsErr) {
+      connectState.set(STATE_ERROR);
+      throw new IOException("QP entered ERROR state");
+    }
+
     if (reclaimedRecvWrs > 0) {
       if (recvWrSize > 0) {
         postRecvWrs(firstRecvWrIndex, reclaimedRecvWrs);
@@ -707,4 +712,5 @@ public class RdmaChannel {
   }
 
   boolean isConnected() { return connectState.get() == STATE_CONNECTED; }
+  boolean isError() { return connectState.get() == STATE_ERROR; }
 }
