@@ -133,6 +133,7 @@ class RdmaWrapperShuffleWriter[K, V, C](
         rdmaShuffleConf.driverHost,
         rdmaShuffleConf.driverPort,
         dep.shuffleId,
+        -1,
         rdmaPartitionLocations)
     }
 

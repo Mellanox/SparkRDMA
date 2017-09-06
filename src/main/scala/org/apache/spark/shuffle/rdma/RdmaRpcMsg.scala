@@ -89,12 +89,14 @@ object RdmaRpcMsg extends Logging {
 
 class RdmaPublishPartitionLocationsRpcMsg(
     var shuffleId: Int,
+    var partitionId: Int,
     var rdmaPartitionLocations: Seq[RdmaPartitionLocation])
   extends RdmaRpcMsg {
-  private final val overhead: Int = 1 + 4 // 1 for isLast bool per segment, + 4 for shuffleId
+  // 1 for isLast bool per segment, + 4 for shuffleId + 4 for partitionId
+  private final val overhead: Int = 1 + 4 + 4
   var isLast = false
 
-  private def this() = this(0, null)  // For deserialization only
+  private def this() = this(0, -1, null)  // For deserialization only
 
   override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.PublishPartitionLocations
 
@@ -121,6 +123,7 @@ class RdmaPublishPartitionLocationsRpcMsg(
       curOut = outs.next()
       curOut._1.writeBoolean(!outs.hasNext)
       curOut._1.writeInt(shuffleId)
+      curOut._1.writeInt(partitionId)
       curSegmentLength = overhead
     }
 
@@ -137,6 +140,7 @@ class RdmaPublishPartitionLocationsRpcMsg(
   override protected def read(in: DataInputStream): Unit = {
     isLast = in.readBoolean()
     shuffleId = in.readInt()
+    partitionId = in.readInt()
 
     val tmpRdmaPartitionLocations = new ArrayBuffer[RdmaPartitionLocation]
     scala.util.control.Exception.ignoring(classOf[EOFException]) {

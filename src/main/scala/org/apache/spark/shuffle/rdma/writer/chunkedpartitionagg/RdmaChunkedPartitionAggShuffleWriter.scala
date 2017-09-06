@@ -64,6 +64,7 @@ class RdmaChunkedPartitionAggShuffleData(shuffleId: Int, numPartitions: Int,
         rdmaShuffleManager.rdmaShuffleConf.driverHost,
         rdmaShuffleManager.rdmaShuffleConf.driverPort,
         shuffleId,
+        -1,
         rdmaPartitionLocations)
     }
 

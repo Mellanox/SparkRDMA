@@ -94,9 +94,8 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
 
           if (!isDriver && publishMsg.isLast) {
             // Kick-off promise for executors
-            assume(publishMsg.rdmaPartitionLocations.last != null)
             val partitionLocation = partitionLocationsMap.get(
-              publishMsg.shuffleId).get(publishMsg.rdmaPartitionLocations.last.partitionId)
+              publishMsg.shuffleId).get(publishMsg.partitionId)
             partitionLocation.promise match {
               case promise: Some[Promise[Seq[RdmaPartitionLocation]]] =>
                 promise.get.trySuccess(partitionLocation.locations)
@@ -107,7 +106,11 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
         case fetchMsg: RdmaFetchPartitionLocationsRpcMsg =>
           assume(isDriver)
           // TODO: catch null exception if doesn't exist. Also, can defer to a future?
-          publishPartitionLocations(fetchMsg.host, fetchMsg.port, fetchMsg.shuffleId,
+          publishPartitionLocations(
+            fetchMsg.host,
+            fetchMsg.port,
+            fetchMsg.shuffleId,
+            fetchMsg.partitionId,
             partitionLocationsMap.get(fetchMsg.shuffleId).get(fetchMsg.partitionId).locations)
 
         case helloMsg: RdmaExecutorHelloRpcMsg =>
@@ -267,14 +270,16 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     }
   }
 
-  def publishPartitionLocations(host : String, port : Int, shuffleId: Int,
+  def publishPartitionLocations(host : String, port : Int, shuffleId: Int, partitionId : Int,
       rdmaPartitionLocations: Seq[RdmaPartitionLocation]) {
     // TODO: Avoid blocking by defining a future with onsuccess that will perform the send
     val rdmaChannel = getRdmaChannel(host, port)
 
-    val buffers = new RdmaPublishPartitionLocationsRpcMsg(shuffleId,
-      rdmaPartitionLocations).toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer,
-      rdmaShuffleConf.recvWrSize)
+    val buffers = new RdmaPublishPartitionLocationsRpcMsg(
+      shuffleId,
+      partitionId,
+      rdmaPartitionLocations).
+      toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
     rdmaChannel.rdmaSendInQueue(
       new RdmaCompletionListener {
