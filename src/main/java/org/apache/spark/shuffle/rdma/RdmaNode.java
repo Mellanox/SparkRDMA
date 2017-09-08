@@ -169,7 +169,13 @@ class RdmaNode {
               continue;
             }
 
-            rdmaChannel.accept();
+            try {
+              rdmaChannel.accept();
+            } catch (IOException ioe) {
+              logger.error("Error in accept call on a passive RdmaChannel: " + ioe);
+              passiveRdmaChannelMap.remove(inetSocketAddress);
+              rdmaChannel.stop();
+            }
           } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_ESTABLISHED.ordinal()) {
             RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
             if (rdmaChannel == null) {

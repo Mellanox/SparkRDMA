@@ -169,17 +169,17 @@ public class RdmaChannel {
   private void setupCommon() throws IOException {
     IbvContext ibvContext = cmId.getVerbs();
     if (ibvContext == null) {
-      throw new IOException("Failed to get the context from the event");
+      throw new IOException("Failed to retrieve IbvContext");
     }
 
     compChannel = ibvContext.createCompChannel();
     if (compChannel == null) {
-      throw new IOException("Failed to create the completion channel");
+      throw new IOException("createCompChannel() failed");
     }
 
     cq = ibvContext.createCQ(compChannel, sendDepth + recvDepth, cpuVector);
     if (cq == null) {
-      throw new IOException("Create CQ failed");
+      throw new IOException("createCQ() failed");
     }
 
     reqNotifyCall = cq.reqNotification(false);
@@ -202,7 +202,7 @@ public class RdmaChannel {
 
     qp = cmId.createQP(rdmaBufferManager.getPd(), attr);
     if (qp == null) {
-      throw new IOException("Failed to allocate the qp");
+      throw new IOException("createQP() failed");
     }
 
     if (recvWrSize == 0) {
@@ -218,20 +218,20 @@ public class RdmaChannel {
   void connect(InetSocketAddress socketAddress) throws IOException {
     eventChannel = RdmaEventChannel.createEventChannel();
     if (eventChannel == null) {
-      throw new IOException("Failed to create an RDMA event channel");
+      throw new IOException("createEventChannel() failed");
     }
 
     // Create an active connect cm id
     cmId = eventChannel.createId(RdmaCm.RDMA_PS_TCP);
     if (cmId == null) {
-      throw new IOException("Failed to create the connecting cmId");
+      throw new IOException("createId() failed");
     }
 
     // Resolve the addr
     connectState.set(STATE_CONNECTING);
     int err = cmId.resolveAddr(null, socketAddress, resolvePathTimeout);
     if (err != 0) {
-      throw new IOException("resolveAddr failed: " + err);
+      throw new IOException("resolveAddr() failed: " + err);
     }
 
     processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ADDR_RESOLVED.ordinal(),
@@ -240,7 +240,7 @@ public class RdmaChannel {
     // Resolve the route
     err = cmId.resolveRoute(resolvePathTimeout);
     if (err != 0) {
-      throw new IOException("resolveRoute failed: " + err);
+      throw new IOException("resolveRoute() failed: " + err);
     }
 
     processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ROUTE_RESOLVED.ordinal(),
@@ -259,7 +259,7 @@ public class RdmaChannel {
     err = cmId.connect(connParams);
     if (err != 0) {
       connectState.set(STATE_ERROR);
-      throw new IOException("Active connect failed");
+      throw new IOException("connect() failed");
     }
 
     processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_ESTABLISHED.ordinal(),
@@ -284,7 +284,7 @@ public class RdmaChannel {
     int err = cmId.accept(connParams);
     if (err != 0) {
       connectState.set(STATE_ERROR);
-      throw new IOException("Failed accept the connection");
+      throw new IOException("accept() failed");
     }
   }
 
@@ -297,7 +297,7 @@ public class RdmaChannel {
     RdmaCmEvent event = eventChannel.getCmEvent(timeout);
     if (event == null) {
       connectState.set(STATE_ERROR);
-      throw new IOException("Failed to get cm event");
+      throw new IOException("getCmEvent() failed");
     }
 
     int eventType = event.getEvent();
@@ -318,7 +318,7 @@ public class RdmaChannel {
   }
 
   private void rdmaPostWRList(LinkedList<IbvSendWR> sendWRList) throws IOException {
-    if (qpIsErr) {
+    if (qpIsErr || isStopped.get()) {
       throw new IOException("QP is in error state, can't post new requests");
     }
 
@@ -327,8 +327,11 @@ public class RdmaChannel {
     sendSVCPostSend.free();
   }
 
-  private void rdmaPostWRListInQueue(LinkedList<IbvSendWR> sendWRList)
-      throws IOException {
+  private void rdmaPostWRListInQueue(LinkedList<IbvSendWR> sendWRList) throws IOException {
+    if (qpIsErr || isStopped.get()) {
+      throw new IOException("QP is in error state, can't post new requests");
+    }
+
     if (sendBudgetSemaphore.tryAcquire(sendWRList.size())) {
       // Ordering is lost here since if there are credits avail they will be immediately utilized
       // without fairness. We don't care about fairness, since Spark doesn't expect the requests to
@@ -356,10 +359,6 @@ public class RdmaChannel {
 
   void rdmaReadInQueue(RdmaCompletionListener listener, long localAddress, int lKey,
       int sizes[], long[] remoteAddresses, int[] rKeys) throws IOException {
-    if (qpIsErr) {
-      throw new IOException("QP is in error state, can't post new requests");
-    }
-
     long offset = 0;
     LinkedList<IbvSendWR> readWRList = new LinkedList<>();
     for (int i = 0; i < remoteAddresses.length; i++) {
@@ -382,8 +381,7 @@ public class RdmaChannel {
     }
 
     readWRList.getLast().setSend_flags(IbvSendWR.IBV_SEND_SIGNALED);
-    int completionInfoId = putCompletionInfo(
-      new CompletionInfo(listener, remoteAddresses.length));
+    int completionInfoId = putCompletionInfo(new CompletionInfo(listener, remoteAddresses.length));
     readWRList.getLast().setWr_id(completionInfoId);
 
     rdmaPostWRListInQueue(readWRList);
@@ -391,10 +389,6 @@ public class RdmaChannel {
 
   void rdmaSendInQueue(RdmaCompletionListener listener, long[] localAddresses, int[] lKeys,
       int[] sizes) throws IOException {
-    if (qpIsErr) {
-      throw new IOException("QP is in error state, can't post new requests");
-    }
-
     LinkedList<IbvSendWR> sendWRList = new LinkedList<>();
     for (int i = 0; i < localAddresses.length; i++) {
       IbvSge sendSge = new IbvSge();
@@ -413,8 +407,7 @@ public class RdmaChannel {
     }
 
     sendWRList.getLast().setSend_flags(IbvSendWR.IBV_SEND_SIGNALED);
-    int completionInfoId = putCompletionInfo(
-      new CompletionInfo(listener, localAddresses.length));
+    int completionInfoId = putCompletionInfo(new CompletionInfo(listener, localAddresses.length));
     sendWRList.getLast().setWr_id(completionInfoId);
 
     rdmaPostWRListInQueue(sendWRList);
@@ -438,7 +431,7 @@ public class RdmaChannel {
   }
 
   private void postZeroSizeRecvWrs(int count) throws IOException {
-    if (qpIsErr || recvDepth == 0) {
+    if (qpIsErr || isStopped.get() || recvDepth == 0) {
       return;
     }
 
@@ -460,7 +453,7 @@ public class RdmaChannel {
   }
 
   private void postRecvWrs(int startIndex, int count) throws IOException {
-    if (qpIsErr || recvDepth == 0) {
+    if (qpIsErr || isStopped.get() || recvDepth == 0) {
       return;
     }
 
@@ -477,7 +470,7 @@ public class RdmaChannel {
   }
 
   private void initRecvs() throws IOException {
-    if (recvDepth == 0) {
+    if (qpIsErr || isStopped.get() || recvDepth == 0) {
       return;
     }
 
@@ -522,7 +515,7 @@ public class RdmaChannel {
           boolean wcSuccess = ibvWCs[i].getStatus() == IbvWC.IbvWcStatus.IBV_WC_SUCCESS.ordinal();
           if (!wcSuccess && !qpIsErr) {
             qpIsErr = true;
-            logger.error("Completion with Error:" + ibvWCs[i].getStatus());
+            logger.error("Completion with Error: " + ibvWCs[i].getStatus());
           }
 
           if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_SEND.getOpcode() ||
@@ -533,12 +526,15 @@ public class RdmaChannel {
               if (wcSuccess) {
                 completionInfo.listener.onSuccess(null);
               } else {
-                completionInfo.listener.onFailure(null);
+                completionInfo.listener.onFailure(
+                  new IOException("RDMA Send/Read WR completed with Error: " +
+                    ibvWCs[i].getStatus()));
               }
 
               reclaimedSendPermits += completionInfo.sendPermitsToReclaim;
-            } else {
-              logger.error("Couldn't find the listener with index: {}", completionInfoId);
+            } else if (wcSuccess) {
+              // Ignore the case of error, as the listener will be invoked by the last WC
+              logger.warn("Couldn't find CompletionInfo with index: " + completionInfoId);
             }
           } else if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_RECV.getOpcode()) {
             int recvWrId = (int)ibvWCs[i].getWr_id();
@@ -553,7 +549,8 @@ public class RdmaChannel {
                 receiveListener.onSuccess(null);
               }
             } else {
-              receiveListener.onFailure(null);
+              receiveListener.onFailure(
+                new IOException("RDMA Receive WR completed with Error: " + ibvWCs[i].getStatus()));
             }
 
             reclaimedRecvWrs += 1;
