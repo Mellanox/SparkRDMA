@@ -27,10 +27,11 @@ import scala.collection.mutable.ListBuffer
 import scala.concurrent.{Await, TimeoutException}
 import scala.concurrent.duration._
 import scala.language.postfixOps
+
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.buffer.ManagedBuffer
-import org.apache.spark.shuffle.FetchFailedException
+import org.apache.spark.shuffle.{FetchFailedException, MetadataFetchFailedException}
 import org.apache.spark.shuffle.rdma.RdmaShuffleFetcherIterator.{FailureFetchResult, FetchResult, SuccessFetchResult}
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.Utils
@@ -104,11 +105,20 @@ private[spark] final class RdmaShuffleFetcherIterator(
       (for (partitionId <- startPartition until endPartition) yield {
         val future = rdmaShuffleManager.fetchRemotePartitionLocations(shuffleId, partitionId)
         try {
-          Await result(future, 30 seconds) // TODO: configurable
+          Await.result(future, 30 seconds) // TODO: configurable
         } catch {
-          case e: TimeoutException => logError("Timed out on fetching remote partition locations " +
-            "for ShuffleId: " + shuffleId + " PartitionId: " + partitionId + " from driver")
-            throw e
+          case te: TimeoutException =>
+            throw new MetadataFetchFailedException(
+              shuffleId,
+              partitionId,
+              "Timeout on fetching remote partition locations for ShuffleId: " + shuffleId +
+                " PartitionId: " + partitionId + " from driver")
+          case e: Exception =>
+            throw new MetadataFetchFailedException(
+              shuffleId,
+              partitionId,
+              "Failed to fetch remote partition locations for ShuffleId: " + shuffleId +
+                " PartitionId: " + partitionId + " from driver: " + e)
         }
       }).flatten
     }.filter(_.hostPort != localHostPort).groupBy(_.hostPort)
@@ -177,7 +187,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
               }
 
               override def onFailure(e: Throwable): Unit = {
-                logError(s"Failed to get block(s) from ${hostPort.host}:${hostPort.port}", e)
+                logError(s"Failed to get block(s) from: " + hostPort + ", Exception: " + e)
                 // TODO: startPartition may only be one of the partitions to report
                 resultsQueue.put(FailureFetchResult(startPartition, hostPort, e))
                 buf.release()
@@ -185,13 +195,17 @@ private[spark] final class RdmaShuffleFetcherIterator(
               }
             }
 
-            rdmaChannel.rdmaReadInQueue(
-              listener,
-              buf.getAddress,
-              buf.getLkey,
-              aggregatedPartitionGroup.locations.map(_.length).toArray,
-              aggregatedPartitionGroup.locations.map(_.address).toArray,
-              aggregatedPartitionGroup.locations.map(_.mKey).toArray)
+            try {
+              rdmaChannel.rdmaReadInQueue(
+                listener,
+                buf.getAddress,
+                buf.getLkey,
+                aggregatedPartitionGroup.locations.map(_.length).toArray,
+                aggregatedPartitionGroup.locations.map(_.address).toArray,
+                aggregatedPartitionGroup.locations.map(_.mKey).toArray)
+            } catch {
+              case e: Exception => listener.onFailure(e)
+            }
           }
         }
 
@@ -272,20 +286,19 @@ private[spark] final class RdmaShuffleFetcherIterator(
     }
 
     result match {
-      // TODO: BlockManagerId is imprecise due to lack of executorId name, do we need to bookkeep?
       case FailureFetchResult(partitionId, hostPort, e) =>
-        throwFetchFailedException(partitionId, BlockManagerId(hostPort.host, hostPort.host,
-          hostPort.port), e)
+        // TODO: BlockManagerId is imprecise due to lack of executorId name, do we need to bookkeep?
+        // TODO: Throw exceptions for all of the mapIds?
+        throw new FetchFailedException(
+          BlockManagerId(hostPort.host, hostPort.host, hostPort.port),
+          shuffleId,
+          0,
+          partitionId,
+          e)
 
       case SuccessFetchResult(_, _, inputStream) =>
         inputStream
     }
-  }
-
-  private def throwFetchFailedException(partitionId: Int,
-      blockManagerId: BlockManagerId, e: Throwable) = {
-    // TODO: Throw exceptions for all of the mapIds?
-    throw new FetchFailedException(blockManagerId, shuffleId, 0, partitionId, e)
   }
 }
 
@@ -339,6 +352,5 @@ object RdmaShuffleFetcherIterator {
   private[rdma] case class FailureFetchResult(
       partitionId: Int,
       hostPort: HostPort,
-      e: Throwable)
-    extends FetchResult
+      e: Throwable) extends FetchResult
 }

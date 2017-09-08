@@ -105,13 +105,16 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
 
         case fetchMsg: RdmaFetchPartitionLocationsRpcMsg =>
           assume(isDriver)
-          // TODO: catch null exception if doesn't exist. Also, can defer to a future?
-          publishPartitionLocations(
-            fetchMsg.host,
-            fetchMsg.port,
-            fetchMsg.shuffleId,
-            fetchMsg.partitionId,
-            partitionLocationsMap.get(fetchMsg.shuffleId).get(fetchMsg.partitionId).locations)
+          try {
+            publishPartitionLocations(
+              fetchMsg.host,
+              fetchMsg.port,
+              fetchMsg.shuffleId,
+              fetchMsg.partitionId,
+              partitionLocationsMap.get(fetchMsg.shuffleId).get(fetchMsg.partitionId).locations)
+          } catch {
+            case e: Exception => logError("Failed to send RdmaPublishPartitionLocationsRpcMsg " + e)
+          }
 
         case helloMsg: RdmaExecutorHelloRpcMsg =>
           assume(isDriver)
@@ -126,15 +129,27 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
                   executorMap.keys.asScala.toSeq).toRdmaByteBufferManagedBuffers(
                     getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
-                for (r <- executorMap.values.asScala) {
+                for ((dstHostPort, dstRdmaChannel) <- executorMap.asScala) {
                   buffers.foreach(_.retain())
-                  r.rdmaSendInQueue(
-                    new RdmaCompletionListener {
-                      override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-                      override def onFailure(e: Throwable): Unit = throw e },
-                    buffers.map(_.getAddress),
-                    buffers.map(_.getLkey),
-                    buffers.map(_.getLength.toInt))
+
+                  val listener = new RdmaCompletionListener {
+                    override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
+                    override def onFailure(e: Throwable): Unit = {
+                      buffers.foreach(_.release())
+                      logError("Failed to send RdmaAnnounceExecutorsRpcMsg to executor: " +
+                        dstHostPort + ", Exception: " + e)
+                    }
+                  }
+
+                  try {
+                    dstRdmaChannel.rdmaSendInQueue(
+                      listener,
+                      buffers.map(_.getAddress),
+                      buffers.map(_.getLkey),
+                      buffers.map(_.getLength.toInt))
+                  } catch {
+                    case e: Exception => listener.onFailure(e)
+                  }
                 }
                 // Release the reference taken by the allocation
                 buffers.foreach(_.release())
@@ -209,15 +224,26 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
         case rdmaChannel =>
           val buffers = new RdmaExecutorHelloRpcMsg(localHostPort.get.host, localHostPort.get.port).
             toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer,
-            rdmaShuffleConf.recvWrSize)
+              rdmaShuffleConf.recvWrSize)
 
-          rdmaChannel.rdmaSendInQueue(
-            new RdmaCompletionListener {
-              override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-              override def onFailure(e: Throwable): Unit = throw e },
-            buffers.map(_.getAddress),
-            buffers.map(_.getLkey),
-            buffers.map(_.getLength.toInt))
+          val listener = new RdmaCompletionListener {
+            override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
+
+            override def onFailure(e: Throwable): Unit = {
+              buffers.foreach(_.release())
+              logError("Failed to send RdmaExecutorHelloRpcMsg to driver " + e)
+            }
+          }
+
+          try {
+            rdmaChannel.rdmaSendInQueue(
+              listener,
+              buffers.map(_.getAddress),
+              buffers.map(_.getLkey),
+              buffers.map(_.getLength.toInt))
+          } catch {
+            case e: Exception => listener.onFailure(e)
+          }
       }
     }
   }
@@ -285,13 +311,25 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       rdmaPartitionLocations).
       toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
-    rdmaChannel.rdmaSendInQueue(
-      new RdmaCompletionListener {
-        override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-        override def onFailure(e: Throwable): Unit = throw e },
-      buffers.map(_.getAddress),
-      buffers.map(_.getLkey),
-      buffers.map(_.getLength.toInt))
+    val listener = new RdmaCompletionListener {
+      override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
+      override def onFailure(e: Throwable): Unit = {
+        buffers.foreach(_.release())
+        logError("Failed to send RdmaPublishPartitionLocationsRpcMsg to " + host + ":" + port +
+          ", Exception: " + e)
+        throw e
+      }
+    }
+
+    try {
+      rdmaChannel.rdmaSendInQueue(
+        listener,
+        buffers.map(_.getAddress),
+        buffers.map(_.getLkey),
+        buffers.map(_.getLength.toInt))
+    } catch {
+      case e: Exception => listener.onFailure(e)
+    }
   }
 
   def fetchRemotePartitionLocations(shuffleId: Int, partitionId : Int)
@@ -311,13 +349,24 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       localHostPort.get.port, shuffleId, partitionId).toRdmaByteBufferManagedBuffers(
         getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
-    rdmaChannel.rdmaSendInQueue(
-      new RdmaCompletionListener {
-        override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-        override def onFailure(e: Throwable): Unit = throw e },
-      buffers.map(_.getAddress),
-      buffers.map(_.getLkey),
-      buffers.map(_.getLength.toInt))
+    val listener = new RdmaCompletionListener {
+      override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
+      override def onFailure(e: Throwable): Unit = {
+        buffers.foreach(_.release())
+        logError("Failed to send RdmaFetchPartitionLocationsRpcMsg to driver " + e)
+        throw e
+      }
+    }
+
+    try {
+      rdmaChannel.rdmaSendInQueue(
+        listener,
+        buffers.map(_.getAddress),
+        buffers.map(_.getLkey),
+        buffers.map(_.getLength.toInt))
+    } catch {
+      case e: Exception => listener.onFailure(e)
+    }
 
     fetchRemotePartitionLocationPromise.future
   }
