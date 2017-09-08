@@ -189,9 +189,11 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
 
   private def startRdmaNodeIfMissing(): Unit = {
     assume(!isDriver)
+    var shouldSendHelloMsg = false
     synchronized {
       if (localHostPort.isEmpty) {
         require(rdmaNode.isEmpty)
+        shouldSendHelloMsg = true
         rdmaNode = Some(new RdmaNode(SparkEnv.get.blockManager.blockManagerId.host, !isDriver,
           rdmaShuffleConf, receiveListener))
         localHostPort = Some(HostPort(rdmaNode.get.getLocalInetSocketAddress.getHostString,
@@ -201,20 +203,22 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
 
     require(rdmaNode.isDefined)
     // Establish a connection to the driver in the background
-    val f = Future { getRdmaChannel(rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort) }
-    f onSuccess {
-      case rdmaChannel =>
-        val buffers = new RdmaExecutorHelloRpcMsg(localHostPort.get.host, localHostPort.get.port).
-          toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer,
-          rdmaShuffleConf.recvWrSize)
+    if (shouldSendHelloMsg) {
+      val f = Future { getRdmaChannel(rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort) }
+      f onSuccess {
+        case rdmaChannel =>
+          val buffers = new RdmaExecutorHelloRpcMsg(localHostPort.get.host, localHostPort.get.port).
+            toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer,
+            rdmaShuffleConf.recvWrSize)
 
-        rdmaChannel.rdmaSendInQueue(
-          new RdmaCompletionListener {
-            override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-            override def onFailure(e: Throwable): Unit = throw e },
-          buffers.map(_.getAddress),
-          buffers.map(_.getLkey),
-          buffers.map(_.getLength.toInt))
+          rdmaChannel.rdmaSendInQueue(
+            new RdmaCompletionListener {
+              override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
+              override def onFailure(e: Throwable): Unit = throw e },
+            buffers.map(_.getAddress),
+            buffers.map(_.getLkey),
+            buffers.map(_.getLength.toInt))
+      }
     }
   }
 
