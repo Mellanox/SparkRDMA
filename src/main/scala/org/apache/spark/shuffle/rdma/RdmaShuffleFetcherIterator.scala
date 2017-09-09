@@ -32,7 +32,7 @@ import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.shuffle.{FetchFailedException, MetadataFetchFailedException}
-import org.apache.spark.shuffle.rdma.RdmaShuffleFetcherIterator.{FailureFetchResult, FetchResult, SuccessFetchResult}
+import org.apache.spark.shuffle.rdma.RdmaShuffleFetcherIterator.{FailureFetchResult, FailureMetadataFetchResult, FetchResult, SuccessFetchResult}
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.Utils
 
@@ -101,27 +101,30 @@ private[spark] final class RdmaShuffleFetcherIterator(
     val rdmaShuffleReaderStats = rdmaShuffleManager.rdmaShuffleReaderStats
     val startRemotePartitionLocationFetch = System.currentTimeMillis()
     // TODO: Aggregate await into a single future
-    val groupedRemoteRdmaPartitionLocations = {
+    val groupedRemoteRdmaPartitionLocations =
       (for (partitionId <- startPartition until endPartition) yield {
-        val future = rdmaShuffleManager.fetchRemotePartitionLocations(shuffleId, partitionId)
         try {
+          val future = rdmaShuffleManager.fetchRemotePartitionLocations(shuffleId, partitionId)
           Await.result(future, 30 seconds) // TODO: configurable
         } catch {
           case te: TimeoutException =>
-            throw new MetadataFetchFailedException(
-              shuffleId,
-              partitionId,
-              "Timeout on fetching remote partition locations for ShuffleId: " + shuffleId +
-                " PartitionId: " + partitionId + " from driver")
+            resultsQueue.put(FailureMetadataFetchResult(
+              new MetadataFetchFailedException(
+                shuffleId,
+                partitionId,
+                "Timed-out while fetching remote partition locations for ShuffleId: " + shuffleId +
+                  " PartitionId: " + partitionId + " from driver")))
+            null
           case e: Exception =>
-            throw new MetadataFetchFailedException(
-              shuffleId,
-              partitionId,
-              "Failed to fetch remote partition locations for ShuffleId: " + shuffleId +
-                " PartitionId: " + partitionId + " from driver: " + e)
+            resultsQueue.put(FailureMetadataFetchResult(
+              new MetadataFetchFailedException(
+                shuffleId,
+                partitionId,
+                "Failed to fetch remote partition locations for ShuffleId: " + shuffleId +
+                  " PartitionId: " + partitionId + " from driver: " + e)))
+            null
         }
-      }).flatten
-    }.filter(_.hostPort != localHostPort).groupBy(_.hostPort)
+      }).filter(_ != null).flatten.filter(_.hostPort != localHostPort).groupBy(_.hostPort)
     logInfo("Fetching remote partition locations took " +
       (System.currentTimeMillis() - startRemotePartitionLocationFetch) + "ms")
 
@@ -159,10 +162,28 @@ private[spark] final class RdmaShuffleFetcherIterator(
         val fetchThread = new Thread("RdmaShuffleFetcherIterator thread") {
           override def run() {
             val startRemoteFetchTime = System.currentTimeMillis()
-            val rdmaChannel = rdmaShuffleManager.getRdmaChannel(hostPort.host, hostPort.port)
-            // Allocate a buffer for the incoming data while connection is established/retrieved
-            val buf = rdmaShuffleManager.getRdmaByteBufferManagedBuffer(
-              aggregatedPartitionGroup.totalLength)
+
+            val rdmaChannel = try {
+              rdmaShuffleManager.getRdmaChannel(hostPort.host, hostPort.port)
+            } catch {
+              case e: Exception =>
+                logError("Failed to establish a connection to executor: " + hostPort +
+                  ", failing pending block fetches. " + e)
+                resultsQueue.put(FailureFetchResult(startPartition, hostPort, e))
+                return
+            }
+
+            val buf = try {
+              // Allocate a buffer for the incoming data while connection is established/retrieved
+              rdmaShuffleManager.getRdmaByteBufferManagedBuffer(
+                aggregatedPartitionGroup.totalLength)
+            } catch {
+              case e: Exception =>
+                logError("Failed to allocate memory for incoming block fetches, failing pending" +
+                  " block fetches. " + e)
+                resultsQueue.put(FailureFetchResult(startPartition, hostPort, e))
+                return
+            }
 
             val listener = new RdmaCompletionListener {
               override def onSuccess(paramBuf: ByteBuffer): Unit = {
@@ -187,7 +208,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
               }
 
               override def onFailure(e: Throwable): Unit = {
-                logError(s"Failed to get block(s) from: " + hostPort + ", Exception: " + e)
+                logError("Failed to get block(s) from: " + hostPort + ", Exception: " + e)
                 // TODO: startPartition may only be one of the partitions to report
                 resultsQueue.put(FailureFetchResult(startPartition, hostPort, e))
                 buf.release()
@@ -286,6 +307,8 @@ private[spark] final class RdmaShuffleFetcherIterator(
     }
 
     result match {
+      case FailureMetadataFetchResult(e) => throw e
+
       case FailureFetchResult(partitionId, hostPort, e) =>
         // TODO: BlockManagerId is imprecise due to lack of executorId name, do we need to bookkeep?
         // TODO: Throw exceptions for all of the mapIds?
@@ -337,10 +360,7 @@ private class BufferReleasingInputStream(
 private[rdma]
 object RdmaShuffleFetcherIterator {
 
-  private[rdma] sealed trait FetchResult {
-    val partitionId: Int
-    val hostPort: HostPort
-  }
+  private[rdma] sealed trait FetchResult { }
 
   private[rdma] case class SuccessFetchResult(
       partitionId: Int,
@@ -353,4 +373,7 @@ object RdmaShuffleFetcherIterator {
       partitionId: Int,
       hostPort: HostPort,
       e: Throwable) extends FetchResult
+
+  private[rdma] case class FailureMetadataFetchResult(e: MetadataFetchFailedException)
+      extends FetchResult
 }
