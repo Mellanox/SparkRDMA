@@ -341,7 +341,10 @@ class RdmaNode {
       }
     }
 
-    assert(rdmaChannel.isConnected());
+    if (rdmaChannel == null || !rdmaChannel.isConnected()) {
+      throw new IOException("Timeout in establishing a connection to " + remoteAddr.toString());
+    }
+
     return rdmaChannel;
   }
 
