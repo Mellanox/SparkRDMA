@@ -106,7 +106,9 @@ class RdmaShufflePartitionWriter(rdmaShuffleManager: RdmaShuffleManager) extends
     rdmaWriterBlock.write(bytes, startWriteOffset)
   }
 
-  def getLocations: Seq[RdmaBlockLocation] = rdmaWriterBlocks.map(_.writerBlock.getLocation)
+  def getLocations: Seq[RdmaBlockLocation] =
+    rdmaWriterBlocks.map(_.writerBlock.getLocation).filter(_.length > 0)
+
 
   def dispose(): Unit = {
     for (r <- rdmaWriterBlocks) {

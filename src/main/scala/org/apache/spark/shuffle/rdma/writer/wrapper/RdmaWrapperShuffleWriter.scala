@@ -17,11 +17,11 @@
 
 package org.apache.spark.shuffle.rdma.writer.wrapper
 
-import java.io.{File, InputStream, IOException}
+import java.io.{File, IOException, InputStream}
+import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.JavaConverters._
-
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
@@ -40,7 +40,10 @@ class RdmaWrapperShuffleData(
   override def getInputStreams(partitionId: Int): Seq[InputStream] = {
     rdmaMappedFileByMapId.asScala.map {
       t: (Int, RdmaMappedFile) =>
-        new ByteBufferBackedInputStream(t._2.getByteBufferForPartition(partitionId))
+        t._2.getByteBufferForPartition(partitionId) match {
+          case buf: ByteBuffer => new ByteBufferBackedInputStream(buf)
+          case _ => new InputStream {override def read(): Int = -1}
+        }
     }.toSeq
   }
 

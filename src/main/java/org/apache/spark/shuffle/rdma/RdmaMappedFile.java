@@ -322,6 +322,7 @@ public class RdmaMappedFile {
 
   public ByteBuffer getByteBufferForPartition(int partitionId) throws IOException {
     RdmaBlockLocation rdmaBlockLocation = getRdmaBlockLocationForPartition(partitionId);
-    return getByteBuffer(rdmaBlockLocation.address(), rdmaBlockLocation.length());
+    return (rdmaBlockLocation.length() == 0) ? null :
+      getByteBuffer(rdmaBlockLocation.address(), rdmaBlockLocation.length());
   }
 }
