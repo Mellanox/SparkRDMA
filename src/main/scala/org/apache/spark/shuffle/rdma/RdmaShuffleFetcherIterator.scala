@@ -20,7 +20,7 @@ package org.apache.spark.shuffle.rdma
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.Timer
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.{ConcurrentLinkedDeque, LinkedBlockingQueue}
 import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable
@@ -64,12 +64,12 @@ private[spark] final class RdmaShuffleFetcherIterator(
   private[this] val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
 
   private[this] val maxBytesInFlight = rdmaShuffleConf.maxBytesInFlight
-  private[this] var curBytesInFlight = 0L
+  @volatile private[this] var curBytesInFlight = 0L
 
   case class AggregatedPartitionGroup(var totalLength: Int,
     locations: ListBuffer[RdmaBlockLocation])
   case class PendingFetch(fetchThread: Thread, aggregatedPartitionGroup: AggregatedPartitionGroup)
-  private[this] val fetchesQueue = new mutable.Queue[PendingFetch]()
+  private[this] val pendingFetchesQueue = new ConcurrentLinkedDeque[PendingFetch]()
 
   private[this] val rdmaShuffleReaderStats = rdmaShuffleManager.rdmaShuffleReaderStats
 
@@ -278,7 +278,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
               fetchThread.start()
               curBytesInFlight += aggregatedPartitionGroup.totalLength
             } else {
-              fetchesQueue += PendingFetch(fetchThread, aggregatedPartitionGroup)
+              pendingFetchesQueue.add(PendingFetch(fetchThread, aggregatedPartitionGroup))
             }
           }
         }
@@ -373,9 +373,13 @@ private[spark] final class RdmaShuffleFetcherIterator(
     }
 
     // Start some pending remote fetches
-    while (fetchesQueue.nonEmpty && curBytesInFlight < maxBytesInFlight) {
-      curBytesInFlight += fetchesQueue.front.aggregatedPartitionGroup.totalLength
-      fetchesQueue.dequeue().fetchThread.start()
+    while (!pendingFetchesQueue.isEmpty && curBytesInFlight < maxBytesInFlight) {
+      pendingFetchesQueue.pollFirst()  match {
+        case pendingFetch: PendingFetch =>
+          curBytesInFlight += pendingFetch.aggregatedPartitionGroup.totalLength
+          pendingFetch.fetchThread.start()
+        case _ =>
+      }
     }
 
     result match {
