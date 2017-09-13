@@ -384,7 +384,12 @@ public class RdmaChannel {
     int completionInfoId = putCompletionInfo(new CompletionInfo(listener, remoteAddresses.length));
     readWRList.getLast().setWr_id(completionInfoId);
 
-    rdmaPostWRListInQueue(readWRList);
+    try {
+      rdmaPostWRListInQueue(readWRList);
+    } catch (Exception e) {
+      removeCompletionInfo(completionInfoId);
+      throw e;
+    }
   }
 
   void rdmaSendInQueue(RdmaCompletionListener listener, long[] localAddresses, int[] lKeys,
@@ -410,7 +415,12 @@ public class RdmaChannel {
     int completionInfoId = putCompletionInfo(new CompletionInfo(listener, localAddresses.length));
     sendWRList.getLast().setWr_id(completionInfoId);
 
-    rdmaPostWRListInQueue(sendWRList);
+    try {
+      rdmaPostWRListInQueue(sendWRList);
+    } catch (Exception e) {
+      removeCompletionInfo(completionInfoId);
+      throw e;
+    }
   }
 
   private void initZeroSizeRecvs() throws IOException {
@@ -507,7 +517,7 @@ public class RdmaChannel {
 
     while (true) {
       int res = svcPollCq.execute().getPolls();
-      if (res < 0){
+      if (res < 0) {
         logger.error("PollCQ failed executing with res: " + res);
         break;
       } else if (res > 0) {
@@ -515,7 +525,7 @@ public class RdmaChannel {
           boolean wcSuccess = ibvWCs[i].getStatus() == IbvWC.IbvWcStatus.IBV_WC_SUCCESS.ordinal();
           if (!wcSuccess && !qpIsErr) {
             qpIsErr = true;
-            logger.error("Completion with Error: " + ibvWCs[i].getStatus());
+            logger.error("Completion with error: " + ibvWCs[i].getStatus());
           }
 
           if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_SEND.getOpcode() ||
@@ -527,7 +537,7 @@ public class RdmaChannel {
                 completionInfo.listener.onSuccess(null);
               } else {
                 completionInfo.listener.onFailure(
-                  new IOException("RDMA Send/Read WR completed with Error: " +
+                  new IOException("RDMA Send/Read WR completed with error: " +
                     ibvWCs[i].getStatus()));
               }
 
@@ -550,7 +560,7 @@ public class RdmaChannel {
               }
             } else {
               receiveListener.onFailure(
-                new IOException("RDMA Receive WR completed with Error: " + ibvWCs[i].getStatus()));
+                new IOException("RDMA Receive WR completed with error: " + ibvWCs[i].getStatus()));
             }
 
             reclaimedRecvWrs += 1;
@@ -606,7 +616,6 @@ public class RdmaChannel {
           reclaimedSendPermits += sendWRList.size();
           sendWrQueue.push(sendWRList);
           sendBudgetSemaphore.release(reclaimedSendPermits);
-          // TODO: need to handle QP destroy and cancel all pending WRs
           break;
         }
       } else {
@@ -643,7 +652,18 @@ public class RdmaChannel {
 
   void stop() throws InterruptedException, IOException {
     if (!isStopped.getAndSet(true)) {
+      logger.info("Stopping RdmaChannel " + this);
+
       if (rdmaThread != null) rdmaThread.stop();
+
+      // Fail pending completionInfos
+      for (Integer completionInfoId: completionInfoMap.keySet()) {
+        final CompletionInfo completionInfo = completionInfoMap.remove(completionInfoId);
+        if (completionInfo != null) {
+          completionInfo.listener.onFailure(
+            new IOException("RDMA Send/Read WR revoked since QP was removed"));
+        }
+      }
 
       if (cmId != null) {
         int ret = cmId.disconnect();

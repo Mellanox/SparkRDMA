@@ -168,7 +168,9 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       }
     }
 
-    override def onFailure(e: Throwable): Unit = throw e
+    override def onFailure(e: Throwable): Unit = {
+      logger.error("Exception in RdmaCompletionListener for receive (ignoring): " + e)
+    }
   }
 
   if (isDriver) {
@@ -317,7 +319,6 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
         buffers.foreach(_.release())
         logError("Failed to send RdmaPublishPartitionLocationsRpcMsg to " + host + ":" + port +
           ", Exception: " + e)
-        throw e
       }
     }
 
@@ -328,7 +329,9 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
         buffers.map(_.getLkey),
         buffers.map(_.getLength.toInt))
     } catch {
-      case e: Exception => listener.onFailure(e)
+      case e: Exception =>
+        listener.onFailure(e)
+        throw e
     }
   }
 
@@ -354,7 +357,6 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       override def onFailure(e: Throwable): Unit = {
         buffers.foreach(_.release())
         logError("Failed to send RdmaFetchPartitionLocationsRpcMsg to driver " + e)
-        throw e
       }
     }
 
@@ -365,7 +367,9 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
         buffers.map(_.getLkey),
         buffers.map(_.getLength.toInt))
     } catch {
-      case e: Exception => listener.onFailure(e)
+      case e: Exception =>
+        listener.onFailure(e)
+        throw e
     }
 
     fetchRemotePartitionLocationPromise.future
