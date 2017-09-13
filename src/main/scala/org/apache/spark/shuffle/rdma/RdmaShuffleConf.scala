@@ -29,14 +29,14 @@ object ShuffleWriterMethod extends Enumeration {
 
 object SparkVersionSupport {
   private val versionRegex = """^(\d+)\.(\d+)(\..*)?$""".r
-  val majorVersion = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
+  val majorVersion: Int = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
     case Some(m) => m.group(1).toInt
     case None => throw new IllegalArgumentException("Unable to parse Spark major version from" +
       " version string: " + SPARK_VERSION)
   }
   if (majorVersion != 2)
     throw new IllegalArgumentException("SparkRDMA only supports Spark versions 2.x")
-  val minorVersion = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
+  val minorVersion: Int = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
     case Some(m) => m.group(2).toInt
     case None => throw new IllegalArgumentException("Unable to parse Spark minor version from" +
       " version string: " + SPARK_VERSION)
@@ -106,6 +106,8 @@ class RdmaShuffleConf(conf: SparkConf) {
   lazy val collectShuffleReaderStats: Boolean = conf.getBoolean(
     toRdmaConfKey("collectShuffleReaderStats"),
     defaultValue = false)
+  lazy val partitionLocationFetchTimeout: Int = getRdmaConfIntInRange(
+    "partitionLocationFetchTimeout", 30000, 1000, Integer.MAX_VALUE)
   lazy val fetchTimeBucketSizeInMs: Int = getRdmaConfIntInRange("fetchTimeBucketSizeInMs", 300, 5,
     60000)
   lazy val fetchTimeNumBuckets: Int = getRdmaConfIntInRange("fetchTimeNumBuckets", 5, 2, 100)
