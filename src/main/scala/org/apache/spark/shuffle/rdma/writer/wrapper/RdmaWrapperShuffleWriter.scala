@@ -122,7 +122,7 @@ class RdmaWrapperShuffleWriter[K, V, C](
       val rdmaPartitionLocations = {
         for (partitionId <- 0 until dep.partitioner.numPartitions;
           rdmaBlockLocation = rdmaMappedFile.getRdmaBlockLocationForPartition(partitionId)
-          if rdmaBlockLocation.length > 0) yield {
+          if rdmaBlockLocation != null && rdmaBlockLocation.length > 0) yield {
           new RdmaPartitionLocation(localHostPort, partitionId, rdmaBlockLocation)
         }
       }
