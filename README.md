@@ -21,7 +21,7 @@ Mellanox ConnectX-4 network adapter with 100GbE RoCE fabric, connected with a Me
 ## Runtime requirements
 * Apache Spark 2.0.0 (more versions to be supported)
 * Java 8
-* libdisni 1.2
+* libdisni 1.3
 * An RDMA-supported network, e.g. RoCE or Infiniband
 
 ## Build
@@ -35,24 +35,24 @@ Mellanox ConnectX-4 network adapter with 100GbE RoCE fabric, connected with a Me
 mvn -DskipTests package
 ```
 
-3. Obtain a clone of [DiSNI](https://github.com/zrlio/disni) for building libdisni 1.2:
+3. Obtain a clone of [DiSNI](https://github.com/zrlio/disni) for building libdisni:
 
 ```
 git clone https://github.com/zrlio/disni.git
 cd disni
-git checkout -b v1.2 247fe8abe54c90b450d2a4b0679e59cfa83205f6
+git checkout tags/v1.3 -b v1.3
 ```
 
 4. Compile and install only libdisni (the jars are already included in the SparkRDMA plugin):
 
 ```
 cd libdisni
-sh autoprepare.sh
+autoprepare.sh
 ./configure --with-jdk=/path/to/java8/jdk
 make
 make install
 ```
-5. libdisni **must** be installed on every Spark Master and Worker
+5. libdisni **must** be installed on every Spark Master and Worker (usually in /usr/lib)
 
 ## Configuration
 
