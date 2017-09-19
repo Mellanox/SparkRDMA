@@ -47,11 +47,12 @@ class RdmaRemoteFetchHistogram(numBuckets: Int, bucketSize: Int) {
 
 class RdmaShuffleReaderStats(rdmaShuffleConf: RdmaShuffleConf) {
   private val logger = LoggerFactory.getLogger(classOf[RdmaShuffleReaderStats])
-  private val remoteFetchHistogramMap = new ConcurrentHashMap[HostPort, RdmaRemoteFetchHistogram]()
+  private val remoteFetchHistogramMap =
+    new ConcurrentHashMap[RdmaShuffleManagerId, RdmaRemoteFetchHistogram]()
   private val globalHistogram = new RdmaRemoteFetchHistogram(rdmaShuffleConf.fetchTimeNumBuckets,
     rdmaShuffleConf.fetchTimeBucketSizeInMs)
 
-  def updateRemoteFetchHistogram(hostPort: HostPort, fetchTimeInMs: Int): Unit = {
+  def updateRemoteFetchHistogram(hostPort: RdmaShuffleManagerId, fetchTimeInMs: Int): Unit = {
     var remoteFetchHistogram = remoteFetchHistogramMap.get(hostPort)
     if (remoteFetchHistogram == null) {
       remoteFetchHistogram = new RdmaRemoteFetchHistogram(rdmaShuffleConf.fetchTimeNumBuckets,

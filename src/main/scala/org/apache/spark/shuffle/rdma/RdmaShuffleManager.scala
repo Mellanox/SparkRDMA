@@ -34,15 +34,16 @@ import org.apache.spark.shuffle.{BaseShuffleHandle, _}
 import org.apache.spark.shuffle.rdma.writer.chunkedpartitionagg.RdmaChunkedPartitionAggShuffleWriter
 import org.apache.spark.shuffle.rdma.writer.wrapper.RdmaWrapperShuffleWriter
 import org.apache.spark.shuffle.sort.{SerializedShuffleHandle, SortShuffleManager}
+import org.apache.spark.storage.BlockManagerId
 
 private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     extends ShuffleManager with Logging {
   private val logger = LoggerFactory.getLogger(classOf[RdmaShuffleManager])
   val rdmaShuffleConf = new RdmaShuffleConf(conf)
   override val shuffleBlockResolver = new RdmaShuffleBlockResolver(this)
-  private val executorMap = new ConcurrentHashMap[HostPort, RdmaChannel]()
+  private val rdmaShuffleManagersMap = new ConcurrentHashMap[RdmaShuffleManagerId, RdmaChannel]()
 
-  private var localHostPort: Option[HostPort] = None
+  private var localRdmaShuffleManagerId: Option[RdmaShuffleManagerId] = None
   private var rdmaNode: Option[RdmaNode] = None
 
   // TODO: Keep RdmaPartitionLocations in serialized form in the driver to save cpu and memory
@@ -74,7 +75,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
                   partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).locations.
                     foreach {
                       x: RdmaPartitionLocation =>
-                        if (x.hostPort == r.hostPort &&
+                        if (x.rdmaShuffleManagerId == r.rdmaShuffleManagerId &&
                           x.rdmaBlockLocation.address == r.rdmaBlockLocation.address) {
                           if (x.rdmaBlockLocation.length < r.rdmaBlockLocation.length) {
                             x.rdmaBlockLocation = r.rdmaBlockLocation
@@ -116,20 +117,20 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
             case e: Exception => logError("Failed to send RdmaPublishPartitionLocationsRpcMsg " + e)
           }
 
-        case helloMsg: RdmaExecutorHelloRpcMsg =>
+        case helloMsg: RdmaShuffleManagerHelloRpcMsg =>
           assume(isDriver)
-          val hostPort = HostPort(helloMsg.host, helloMsg.port)
+          val rdmaShuffleManagerId = helloMsg.rdmaShuffleManagerId
 
-          if (executorMap.get(hostPort) == null) {
-            val f = Future { getRdmaChannel(hostPort.host, hostPort.port) }
+          if (rdmaShuffleManagersMap.get(rdmaShuffleManagerId) == null) {
+            val f = Future { getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port) }
             f onSuccess {
               case rdmaChannel =>
-                executorMap.put(hostPort, rdmaChannel)
-                val buffers = new RdmaAnnounceExecutorsRpcMsg(
-                  executorMap.keys.asScala.toSeq).toRdmaByteBufferManagedBuffers(
+                rdmaShuffleManagersMap.put(rdmaShuffleManagerId, rdmaChannel)
+                val buffers = new RdmaAnnounceRdmaShuffleManagersRpcMsg(
+                  rdmaShuffleManagersMap.keys.asScala.toSeq).toRdmaByteBufferManagedBuffers(
                     getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
-                for ((dstHostPort, dstRdmaChannel) <- executorMap.asScala) {
+                for ((dstRdmaShuffleManagerId, dstRdmaChannel) <- rdmaShuffleManagersMap.asScala) {
                   buffers.foreach(_.retain())
 
                   val listener = new RdmaCompletionListener {
@@ -137,7 +138,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
                     override def onFailure(e: Throwable): Unit = {
                       buffers.foreach(_.release())
                       logError("Failed to send RdmaAnnounceExecutorsRpcMsg to executor: " +
-                        dstHostPort + ", Exception: " + e)
+                        dstRdmaShuffleManagerId + ", Exception: " + e)
                     }
                   }
 
@@ -156,11 +157,11 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
             }
           }
 
-        case announceMsg: RdmaAnnounceExecutorsRpcMsg =>
+        case announceMsg: RdmaAnnounceRdmaShuffleManagersRpcMsg =>
           assume(!isDriver)
-          for (hostPort <- announceMsg.executorList) {
-            if (hostPort != localHostPort.get) {
-              Future { getRdmaChannel(hostPort.host, hostPort.port) }
+          for (rdmaShuffleManagerId <- announceMsg.rdmaShuffleManagerIds) {
+            if (rdmaShuffleManagerId != localRdmaShuffleManagerId.get) {
+              Future { getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port) }
             }
           }
 
@@ -176,9 +177,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   if (isDriver) {
     rdmaNode = Some(new RdmaNode(conf.get("spark.driver.host"), false, rdmaShuffleConf,
       receiveListener))
-    localHostPort = Some(HostPort(rdmaNode.get.getLocalInetSocketAddress.getHostString,
-      rdmaNode.get.getLocalInetSocketAddress.getPort))
-    rdmaShuffleConf.setDriverPort(localHostPort.get.port.toString)
+    rdmaShuffleConf.setDriverPort(rdmaNode.get.getLocalInetSocketAddress.getPort.toString)
   }
 
   // Called on the driver only!
@@ -186,6 +185,13 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       shuffleId: Int,
       numMaps: Int,
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
+    if (localRdmaShuffleManagerId.isEmpty) {
+      localRdmaShuffleManagerId = Some(new RdmaShuffleManagerId(
+        rdmaNode.get.getLocalInetSocketAddress.getHostString,
+        rdmaNode.get.getLocalInetSocketAddress.getPort,
+        SparkEnv.get.blockManager.blockManagerId))
+    }
+
     val partitionHashMap = new ConcurrentHashMap[Int, PartitionLocation](
       dependency.partitioner.numPartitions)
     for (partId <- 0 until dependency.partitioner.numPartitions) {
@@ -208,13 +214,15 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     assume(!isDriver)
     var shouldSendHelloMsg = false
     synchronized {
-      if (localHostPort.isEmpty) {
+      if (localRdmaShuffleManagerId.isEmpty) {
         require(rdmaNode.isEmpty)
         shouldSendHelloMsg = true
         rdmaNode = Some(new RdmaNode(SparkEnv.get.blockManager.blockManagerId.host, !isDriver,
           rdmaShuffleConf, receiveListener))
-        localHostPort = Some(HostPort(rdmaNode.get.getLocalInetSocketAddress.getHostString,
-          rdmaNode.get.getLocalInetSocketAddress.getPort))
+        localRdmaShuffleManagerId = Some(new RdmaShuffleManagerId(
+          rdmaNode.get.getLocalInetSocketAddress.getHostString,
+          rdmaNode.get.getLocalInetSocketAddress.getPort,
+          SparkEnv.get.blockManager.blockManagerId))
       }
     }
 
@@ -224,7 +232,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       val f = Future { getRdmaChannel(rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort) }
       f onSuccess {
         case rdmaChannel =>
-          val buffers = new RdmaExecutorHelloRpcMsg(localHostPort.get.host, localHostPort.get.port).
+          val buffers = new RdmaShuffleManagerHelloRpcMsg(localRdmaShuffleManagerId.get).
             toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer,
               rdmaShuffleConf.recvWrSize)
 
@@ -348,8 +356,8 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     partitionLocationsMap.get(shuffleId).put(partitionId, PartitionLocation(
       new ArrayBuffer[RdmaPartitionLocation], Some(fetchRemotePartitionLocationPromise)))
 
-    val buffers = new RdmaFetchPartitionLocationsRpcMsg(localHostPort.get.host,
-      localHostPort.get.port, shuffleId, partitionId).toRdmaByteBufferManagedBuffers(
+    val buffers = new RdmaFetchPartitionLocationsRpcMsg(localRdmaShuffleManagerId.get.host,
+      localRdmaShuffleManagerId.get.port, shuffleId, partitionId).toRdmaByteBufferManagedBuffers(
         getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
     val listener = new RdmaCompletionListener {
@@ -386,5 +394,5 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   // TODO: Clean this disni dependency out?
   def getIbvPd: IbvPd = rdmaNode.get.getRdmaBufferManager.getPd
 
-  def getLocalHostPort: HostPort = localHostPort.get
+  def getLocalRdmaShuffleManagerId: RdmaShuffleManagerId = localRdmaShuffleManagerId.get
 }

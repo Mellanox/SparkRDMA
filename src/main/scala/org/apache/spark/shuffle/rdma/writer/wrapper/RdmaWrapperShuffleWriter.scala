@@ -117,7 +117,7 @@ class RdmaWrapperShuffleWriter[K, V, C](
 
     if (success) {
       val rdmaShuffleManager = env.shuffleManager.asInstanceOf[RdmaShuffleManager]
-      val localHostPort = rdmaShuffleManager.getLocalHostPort
+      val localRdmaShuffleManagerId = rdmaShuffleManager.getLocalRdmaShuffleManagerId
       val dep = handle.dependency
       val rdmaMappedFile = rdmaShuffleBlockResolver.getRdmaShuffleData(dep.shuffleId).
         asInstanceOf[RdmaWrapperShuffleData].getRdmaMappedFileForMapId(mapId)
@@ -126,7 +126,7 @@ class RdmaWrapperShuffleWriter[K, V, C](
         for (partitionId <- 0 until dep.partitioner.numPartitions;
           rdmaBlockLocation = rdmaMappedFile.getRdmaBlockLocationForPartition(partitionId)
           if rdmaBlockLocation != null && rdmaBlockLocation.length > 0) yield {
-          new RdmaPartitionLocation(localHostPort, partitionId, rdmaBlockLocation)
+          new RdmaPartitionLocation(localRdmaShuffleManagerId, partitionId, rdmaBlockLocation)
         }
       }
 

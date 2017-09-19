@@ -50,11 +50,12 @@ class RdmaChunkedPartitionAggShuffleData(shuffleId: Int, numPartitions: Int,
 
     val remainingWriters = activeShuffleWriters.decrementAndGet()
     if (remainingWriters == 0) this.synchronized {
+      val localRdmaShuffleManagerId = rdmaShuffleManager.getLocalRdmaShuffleManagerId
       val rdmaPartitionLocations = writers.zipWithIndex.collect {
         case (writer: RdmaShufflePartitionWriter, partitionId: Int) =>
           for (location <- writer.getLocations) yield {
             new RdmaPartitionLocation(
-              rdmaShuffleManager.getLocalHostPort,
+              localRdmaShuffleManagerId,
               partitionId,
               location)
           }
