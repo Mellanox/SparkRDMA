@@ -30,6 +30,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
 
 import org.apache.spark._
 import org.apache.spark.internal.Logging
+import org.apache.spark.scheduler.{SparkListener, SparkListenerBlockManagerRemoved}
 import org.apache.spark.shuffle.{BaseShuffleHandle, _}
 import org.apache.spark.shuffle.rdma.writer.chunkedpartitionagg.RdmaChunkedPartitionAggShuffleWriter
 import org.apache.spark.shuffle.rdma.writer.wrapper.RdmaWrapperShuffleWriter
@@ -48,7 +49,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
 
   // TODO: Keep RdmaPartitionLocations in serialized form in the driver to save cpu and memory
   // TODO: naming is too confusing for this type
-  case class PartitionLocation(locations: ArrayBuffer[RdmaPartitionLocation],
+  case class PartitionLocation(var locations: ArrayBuffer[RdmaPartitionLocation],
     promise: Option[Promise[Seq[RdmaPartitionLocation]]])
   private val partitionLocationsMap =
     new ConcurrentHashMap[Int, ConcurrentHashMap[Int, PartitionLocation]]
@@ -66,7 +67,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       RdmaRpcMsg(buf) match {
         case publishMsg: RdmaPublishPartitionLocationsRpcMsg =>
           for (r <- publishMsg.rdmaPartitionLocations) {
-            partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).locations.
+            partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).
               synchronized {
                 if (rdmaShuffleConf.shuffleWriterMethod ==
                   ShuffleWriterMethod.ChunkedPartitionAgg) {
@@ -185,12 +186,37 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       shuffleId: Int,
       numMaps: Int,
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
+    assume(isDriver)
     if (localRdmaShuffleManagerId.isEmpty) {
       localRdmaShuffleManagerId = Some(new RdmaShuffleManagerId(
         rdmaNode.get.getLocalInetSocketAddress.getHostString,
         rdmaNode.get.getLocalInetSocketAddress.getPort,
         SparkEnv.get.blockManager.blockManagerId))
     }
+
+    SparkContext.getOrCreate(conf).addSparkListener(
+      new SparkListener {
+        override def onBlockManagerRemoved(blockManagerRemoved: SparkListenerBlockManagerRemoved) {
+          synchronized {
+            // Remove all of the RdmaPartitionLocations with this BlockManagerId
+            partitionLocationsMap.values.asScala.foreach(_.values.asScala.foreach {
+              partition => partition.synchronized {
+                partition.locations = partition.locations.filter(
+                  _.rdmaShuffleManagerId.blockManagerId != blockManagerRemoved.blockManagerId)
+              }
+            })
+
+            // Remove this BlockManagerId from the list
+            rdmaShuffleManagersMap.keys.asScala.foreach { rdmaShuffleManagerId =>
+              if (rdmaShuffleManagerId.blockManagerId == blockManagerRemoved.blockManagerId) {
+                rdmaShuffleManagersMap.remove(rdmaShuffleManagerId)
+                logger.info("BlockManager " + blockManagerRemoved.blockManagerId + " is removed," +
+                  " removing associated rdmaChannel from rdmaShuffleManagersMap")
+              }
+            }
+          }
+        }
+      })
 
     val partitionHashMap = new ConcurrentHashMap[Int, PartitionLocation](
       dependency.partitioner.numPartitions)
