@@ -278,7 +278,7 @@ class RdmaNode {
 
   public RdmaBufferManager getRdmaBufferManager() { return rdmaBufferManager; }
 
-  public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr)
+  public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr, boolean mustRetry)
       throws IOException, InterruptedException {
     final long startTime = System.nanoTime();
     final int maxConnectionAttempts = conf.maxConnectionAttempts();
@@ -287,7 +287,7 @@ class RdmaNode {
     int connectionAttempts = 0;
 
     RdmaChannel rdmaChannel = null;
-    while ((connectionTimeout - elapsedTime) > 0) {
+    do {
       rdmaChannel = activeRdmaChannelMap.get(remoteAddr);
       if (rdmaChannel == null) {
         rdmaChannel = new RdmaChannel(
@@ -312,14 +312,18 @@ class RdmaNode {
             ++connectionAttempts;
             activeRdmaChannelMap.remove(remoteAddr, rdmaChannel);
             rdmaChannel.stop();
-            if (connectionAttempts == maxConnectionAttempts) {
-              logger.error("Failed to connect to " + remoteAddr + " after " +
-                maxConnectionAttempts + " attempts, aborting");
-              throw e;
+            if (mustRetry) {
+              if (connectionAttempts == maxConnectionAttempts) {
+                logger.error("Failed to connect to " + remoteAddr + " after " +
+                  maxConnectionAttempts + " attempts, aborting");
+                throw e;
+              } else {
+                logger.error("Failed to connect to " + remoteAddr + ", attempt " +
+                  connectionAttempts + " of " + maxConnectionAttempts + " with exception: " + e);
+                continue;
+              }
             } else {
-              logger.error("Failed to connect to " + remoteAddr + ", attempt " +
-                connectionAttempts + " of " + maxConnectionAttempts + " with exception: " + e);
-              continue;
+              logger.error("Failed to connect to " + remoteAddr + " with exception: " + e);
             }
           }
         }
@@ -339,9 +343,9 @@ class RdmaNode {
       if (rdmaChannel.isConnected()) {
         break;
       }
-    }
+    } while (mustRetry && (connectionTimeout - elapsedTime) > 0);
 
-    if (rdmaChannel == null || !rdmaChannel.isConnected()) {
+    if (mustRetry && (rdmaChannel == null || !rdmaChannel.isConnected())) {
       throw new IOException("Timeout in establishing a connection to " + remoteAddr.toString());
     }
 

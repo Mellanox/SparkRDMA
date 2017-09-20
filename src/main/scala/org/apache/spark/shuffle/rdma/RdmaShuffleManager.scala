@@ -123,7 +123,9 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
           val rdmaShuffleManagerId = helloMsg.rdmaShuffleManagerId
 
           if (rdmaShuffleManagersMap.get(rdmaShuffleManagerId) == null) {
-            val f = Future { getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port) }
+            val f = Future {
+              getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port, false)
+            }
             f onSuccess {
               case rdmaChannel =>
                 rdmaShuffleManagersMap.put(rdmaShuffleManagerId, rdmaChannel)
@@ -162,7 +164,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
           assume(!isDriver)
           for (rdmaShuffleManagerId <- announceMsg.rdmaShuffleManagerIds) {
             if (rdmaShuffleManagerId != localRdmaShuffleManagerId.get) {
-              Future { getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port) }
+              Future { getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port, false) }
             }
           }
 
@@ -255,7 +257,9 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     require(rdmaNode.isDefined)
     // Establish a connection to the driver in the background
     if (shouldSendHelloMsg) {
-      val f = Future { getRdmaChannel(rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort) }
+      val f = Future {
+        getRdmaChannel(rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort, false)
+      }
       f onSuccess {
         case rdmaChannel =>
           val buffers = new RdmaShuffleManagerHelloRpcMsg(localRdmaShuffleManagerId.get).
@@ -339,7 +343,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   def publishPartitionLocations(host : String, port : Int, shuffleId: Int, partitionId : Int,
       rdmaPartitionLocations: Seq[RdmaPartitionLocation]) {
     // TODO: Avoid blocking by defining a future with onsuccess that will perform the send
-    val rdmaChannel = getRdmaChannel(host, port)
+    val rdmaChannel = getRdmaChannel(host, port, true)
 
     val buffers = new RdmaPublishPartitionLocationsRpcMsg(
       shuffleId,
@@ -373,7 +377,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       : Future[Seq[RdmaPartitionLocation]] = {
     assume(!isDriver)
     // TODO: Avoid blocking by defining a future with onsuccess that will perform the send
-    val rdmaChannel = getRdmaChannel(rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort)
+    val rdmaChannel = getRdmaChannel(rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort, true)
 
     val fetchRemotePartitionLocationPromise: Promise[Seq[RdmaPartitionLocation]] = Promise()
     // We assume that only one consumer mutates partitionLocationsMap for this particular
@@ -409,8 +413,8 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     fetchRemotePartitionLocationPromise.future
   }
 
-  def getRdmaChannel(host: String, port: Int): RdmaChannel =
-    rdmaNode.get.getRdmaChannel(new InetSocketAddress(host, port))
+  def getRdmaChannel(host: String, port: Int, mustRetry: Boolean): RdmaChannel =
+    rdmaNode.get.getRdmaChannel(new InetSocketAddress(host, port), mustRetry)
 
   def getRdmaByteBufferManagedBuffer(length : Int): RdmaByteBufferManagedBuffer = {
     new RdmaByteBufferManagedBuffer(new RdmaRegisteredBuffer(rdmaNode.get.getRdmaBufferManager,

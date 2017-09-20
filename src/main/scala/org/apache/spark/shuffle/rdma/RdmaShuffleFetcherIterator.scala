@@ -137,7 +137,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
     val startRemoteFetchTime = System.currentTimeMillis()
 
     val rdmaChannel = try {
-      rdmaShuffleManager.getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port)
+      rdmaShuffleManager.getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port, true)
     } catch {
       case e: Exception =>
         logError("Failed to establish a connection to rdmaShuffleManager: " + rdmaShuffleManagerId +
