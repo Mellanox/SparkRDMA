@@ -97,7 +97,7 @@ class RdmaShuffleConf(conf: SparkConf) {
   // Shuffle reader configuration
   //
   lazy val shuffleReadBlockSize: Long = getRdmaConfSizeAsBytesInRange(
-    "shuffleReadBlockSize", "8m", "128k", "512m")
+    "shuffleReadBlockSize", "8m", "0", "512m")
   lazy val maxBytesInFlight: Long = getRdmaConfSizeAsBytesInRange(
     "maxBytesInFlight", "128m", "48m", "100g")
   lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "2m", "1g")
