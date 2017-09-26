@@ -486,7 +486,7 @@ public class RdmaChannel {
 
     LinkedList<IbvRecvWR> recvWrList = new LinkedList<>();
     for (int i = 0; i < recvDepth; i++) {
-      RdmaBuffer rdmaBuffer = rdmaBufferManager.get(recvWrSize, false);
+      RdmaBuffer rdmaBuffer = rdmaBufferManager.get(recvWrSize);
 
       IbvSge sge = new IbvSge();
       sge.setAddr(rdmaBuffer.getAddress());

@@ -100,11 +100,11 @@ public class RdmaBufferManager {
     return allocatorStack;
   }
 
-  RdmaBuffer get(int length, boolean isAggBlock) throws IOException {
+  RdmaBuffer get(int length) throws IOException {
     // Round up length to the nearest power of two, or the minimum block size
     if (length < minimumAllocationSize) {
       length = minimumAllocationSize;
-    } else if (!isAggBlock) {
+    } else {
       length--;
       length |= length >> 1;
       length |= length >> 2;

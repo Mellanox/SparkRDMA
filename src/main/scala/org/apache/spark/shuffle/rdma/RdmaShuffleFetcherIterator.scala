@@ -144,11 +144,18 @@ private[spark] final class RdmaShuffleFetcherIterator(
         return
     }
 
-    val buf = try {
-      // Allocate a buffer for the incoming data while connection is established/retrieved
-      rdmaShuffleManager.getRdmaByteBufferManagedBuffer(aggregatedPartitionGroup.totalLength)
+    var rdmaRegisteredBuffer: RdmaRegisteredBuffer = null
+    val rdmaByteBufferManagedBuffers = try {
+      // Allocate a buffer and multiple ByteBuffers for the incoming data while connection is being
+      // established/retrieved
+      rdmaRegisteredBuffer = rdmaShuffleManager.getRdmaRegisteredBuffer(
+        aggregatedPartitionGroup.totalLength)
+
+      aggregatedPartitionGroup.locations.map(_.length).map(
+        new RdmaByteBufferManagedBuffer(rdmaRegisteredBuffer, _))
     } catch {
       case e: Exception =>
+        if (rdmaRegisteredBuffer != null) rdmaRegisteredBuffer.release()
         logError("Failed to allocate memory for incoming block fetches, failing pending" +
           " block fetches. " + e)
         RdmaShuffleFetcherIterator.this.synchronized {
@@ -162,23 +169,28 @@ private[spark] final class RdmaShuffleFetcherIterator(
         // Only add the buffer to results queue if the iterator is not zombie,
         // i.e. cleanup() has not been called yet.
         RdmaShuffleFetcherIterator.this.synchronized {
-          if (!isStopped) {
-            val inputStream = new BufferReleasingInputStream(buf.createInputStream(), buf)
-            // TODO: startPartition may only be one of the partitions to report
-            RdmaShuffleFetcherIterator.this.synchronized {
-              resultsQueue.put(SuccessFetchResult(startPartition, rdmaShuffleManagerId, inputStream))
+          rdmaByteBufferManagedBuffers.foreach { buf =>
+            if (!isStopped) {
+              val inputStream = new BufferReleasingInputStream(buf.createInputStream(), buf)
+              // TODO: startPartition may only be one of the partitions to report
+              RdmaShuffleFetcherIterator.this.synchronized {
+                resultsQueue.put(SuccessFetchResult(
+                  startPartition,
+                  rdmaShuffleManagerId,
+                  inputStream))
+              }
+            } else {
+              buf.release()
             }
-            if (rdmaShuffleReaderStats != null) {
-              rdmaShuffleReaderStats.updateRemoteFetchHistogram(rdmaShuffleManagerId,
-                (System.currentTimeMillis() - startRemoteFetchTime).toInt)
-            }
-          } else {
-            buf.release()
+          }
+          if (rdmaShuffleReaderStats != null) {
+            rdmaShuffleReaderStats.updateRemoteFetchHistogram(rdmaShuffleManagerId,
+              (System.currentTimeMillis() - startRemoteFetchTime).toInt)
           }
         }
         // TODO: startPartition may only be one of the partitions to report
-        logTrace("Got remote block " + startPartition + " from " + rdmaShuffleManagerId.host + ":" +
-          rdmaShuffleManagerId.port + " after " + Utils.getUsedTimeMs(startTime))
+        logTrace("Got remote block(s) " + startPartition + " from " + rdmaShuffleManagerId.host +
+          ":" + rdmaShuffleManagerId.port + " after " + Utils.getUsedTimeMs(startTime))
       }
 
       override def onFailure(e: Throwable): Unit = {
@@ -187,7 +199,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
         RdmaShuffleFetcherIterator.this.synchronized {
           resultsQueue.put(FailureFetchResult(startPartition, rdmaShuffleManagerId, e))
         }
-        buf.release()
+        rdmaByteBufferManagedBuffers.foreach(_.release())
         // We skip curBytesInFlight since we expect one failure to fail the whole task
       }
     }
@@ -195,8 +207,8 @@ private[spark] final class RdmaShuffleFetcherIterator(
     try {
       rdmaChannel.rdmaReadInQueue(
         listener,
-        buf.getAddress,
-        buf.getLkey,
+        rdmaRegisteredBuffer.getRegisteredAddress,
+        rdmaRegisteredBuffer.getLkey,
         aggregatedPartitionGroup.locations.map(_.length).toArray,
         aggregatedPartitionGroup.locations.map(_.address).toArray,
         aggregatedPartitionGroup.locations.map(_.mKey).toArray)
@@ -266,7 +278,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
           }
 
           for (aggregatedPartitionGroup <- aggregatedPartitionGroups) {
-            numBlocksToFetch += 1
+            numBlocksToFetch += aggregatedPartitionGroup.locations.length
 
             if (curBytesInFlight < maxBytesInFlight) {
               curBytesInFlight += aggregatedPartitionGroup.totalLength

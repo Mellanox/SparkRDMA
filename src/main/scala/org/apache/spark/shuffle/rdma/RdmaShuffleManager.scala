@@ -418,7 +418,11 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
 
   def getRdmaByteBufferManagedBuffer(length : Int): RdmaByteBufferManagedBuffer = {
     new RdmaByteBufferManagedBuffer(new RdmaRegisteredBuffer(rdmaNode.get.getRdmaBufferManager,
-      length, false), length)
+      length), length)
+  }
+
+  def getRdmaRegisteredBuffer(length : Int): RdmaRegisteredBuffer = {
+    new RdmaRegisteredBuffer(rdmaNode.get.getRdmaBufferManager, length)
   }
 
   // TODO: Clean this disni dependency out?
