@@ -49,7 +49,7 @@ private[spark] class RdmaShuffleReader[K, C](
 
     val dummyShuffleBlockId = ShuffleBlockId(0, 0, 0)
     // Wrap the streams for compression based on configuration
-    val wrappedStreams = rdmaShuffleFetcherIterator.map { inputStream =>
+    val wrappedStreams = rdmaShuffleFetcherIterator.filter(_ != null).map { inputStream =>
       wrapStreamMethod.invoke(
         serializerManager,
         dummyShuffleBlockId,

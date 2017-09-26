@@ -38,13 +38,9 @@ class RdmaWrapperShuffleData(
   private val rdmaMappedFileByMapId = new ConcurrentHashMap[Int, RdmaMappedFile]
 
   override def getInputStreams(partitionId: Int): Seq[InputStream] = {
-    rdmaMappedFileByMapId.asScala.map {
-      t: (Int, RdmaMappedFile) =>
-        t._2.getByteBufferForPartition(partitionId) match {
-          case buf: ByteBuffer => new ByteBufferBackedInputStream(buf)
-          case _ => new InputStream {override def read(): Int = -1}
-        }
-    }.toSeq
+    rdmaMappedFileByMapId.asScala.map(
+      _._2.getByteBufferForPartition(partitionId)).filter(_ != null)
+      .map(new ByteBufferBackedInputStream(_)).toSeq
   }
 
   override def dispose(): Unit = { rdmaMappedFileByMapId.asScala.foreach(_._2.dispose()) }

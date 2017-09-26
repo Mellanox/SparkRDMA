@@ -32,7 +32,6 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.shuffle.{FetchFailedException, MetadataFetchFailedException}
 import org.apache.spark.shuffle.rdma.RdmaShuffleFetcherIterator.{FailureFetchResult, FailureMetadataFetchResult, FetchResult, SuccessFetchResult}
-import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.util.Utils
 
 private[spark] final class RdmaShuffleFetcherIterator(
@@ -82,7 +81,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
     synchronized { isStopped = true }
 
     currentResult match {
-      case SuccessFetchResult(_, _, inputStream) => inputStream.close()
+      case SuccessFetchResult(_, _, inputStream) if inputStream != null => inputStream.close()
       case _ =>
     }
     currentResult = null
@@ -91,7 +90,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
     while (iter.hasNext) {
       val result = iter.next()
       result match {
-        case SuccessFetchResult(_, rdmaShuffleManagerId, inputStream) =>
+        case SuccessFetchResult(_, rdmaShuffleManagerId, inputStream) if inputStream != null =>
           if (rdmaShuffleManagerId != localRdmaShuffleManagerId) {
             shuffleMetrics.incRemoteBytesRead(inputStream.available)
             shuffleMetrics.incRemoteBlocksFetched(1)
@@ -122,10 +121,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
     RdmaShuffleFetcherIterator.this.synchronized {
       if (!isStopped) {
         RdmaShuffleFetcherIterator.this.synchronized {
-          resultsQueue.put(SuccessFetchResult(
-            startPartition, localRdmaShuffleManagerId, new InputStream {
-              override def read(): Int = -1
-            }))
+          resultsQueue.put(SuccessFetchResult(startPartition, localRdmaShuffleManagerId, null))
         }
       }
     }
@@ -284,14 +280,22 @@ private[spark] final class RdmaShuffleFetcherIterator(
         if (groupedRemoteRdmaPartitionLocations.isEmpty) {
           // If fetch did not yield any buffers, we must trigger next() to continue, as it may be
           // blocked by resultsQueue.take()
-          insertDummyResult()
+          // numBlocksToFetch and isFetchPartitionLocationsInProgress must be set in this exact
+          // order to avoid race conditions in hasNext()
           numBlocksToFetch += 1
+          isFetchPartitionLocationsInProgress = false
+          insertDummyResult()
+        } else {
+          isFetchPartitionLocationsInProgress = false
         }
-
-        isFetchPartitionLocationsInProgress = false
       }
 
       timeoutFutureSeq.onFailure { case error =>
+        // numBlocksToFetch and isFetchPartitionLocationsInProgress must be set in this exact
+        // order to avoid race conditions in hasNext()
+        numBlocksToFetch += 1
+        isFetchPartitionLocationsInProgress = false
+
         error match {
           case _: TimeoutException =>
             RdmaShuffleFetcherIterator.this.synchronized {
@@ -320,9 +324,6 @@ private[spark] final class RdmaShuffleFetcherIterator(
             // blocked by resultsQueue.take()
             insertDummyResult()
         }
-
-        numBlocksToFetch += 1
-        isFetchPartitionLocationsInProgress = false
       }
     }
   }
@@ -335,7 +336,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
 
     for (partitionId <- startPartition until endPartition) {
       rdmaShuffleManager.shuffleBlockResolver.getLocalRdmaPartition(shuffleId, partitionId).foreach{
-        case in: Any =>
+        case in: InputStream =>
           shuffleMetrics.incLocalBlocksFetched(1)
           shuffleMetrics.incLocalBytesRead(in.available())
           RdmaShuffleFetcherIterator.this.synchronized {
@@ -361,7 +362,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
     shuffleMetrics.incFetchWaitTime(stopFetchWait - startFetchWait)
 
     result match {
-      case SuccessFetchResult(_, rdmaShuffleManagerId, inputStream) =>
+      case SuccessFetchResult(_, rdmaShuffleManagerId, inputStream) if inputStream != null =>
         if (rdmaShuffleManagerId != localRdmaShuffleManagerId) {
           shuffleMetrics.incRemoteBytesRead(inputStream.available)
           shuffleMetrics.incRemoteBlocksFetched(1)
@@ -440,9 +441,7 @@ object RdmaShuffleFetcherIterator {
   private[rdma] case class SuccessFetchResult(
       partitionId: Int,
       rdmaShuffleManagerId: RdmaShuffleManagerId,
-      inputStream: InputStream) extends FetchResult {
-    require(inputStream != null)
-  }
+      inputStream: InputStream) extends FetchResult
 
   private[rdma] case class FailureFetchResult(
       partitionId: Int,
