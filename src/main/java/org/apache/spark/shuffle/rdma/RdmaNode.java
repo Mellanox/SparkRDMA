@@ -113,7 +113,7 @@ class RdmaNode {
     }
 
     listeningThread = new Thread(() -> {
-      logger.info("Starting RdmaNode Listening Server");
+      logger.info("Starting RdmaNode Listening Server, listening on: " + localInetSocketAddress);
 
       final int teardownListenTimeout = conf.teardownListenTimeout();
       while (runThread.get()) {

@@ -678,15 +678,19 @@ public class RdmaChannel {
           }
         }
 
-        ret = cmId.destroyQP();
-        if (ret != 0) {
-          logger.error("destroyQP failed with errno: " + ret);
+        if (qp != null) {
+          ret = cmId.destroyQP();
+          if (ret != 0) {
+            logger.error("destroyQP failed with errno: " + ret);
+          }
         }
       }
 
       if (recvWrSize > 0) {
         for (int i = 0; i < recvDepth; i++) {
-          rdmaBufferManager.put(postRecvWrArray[i].rdmaBuf);
+          if (postRecvWrArray[i] != null) {
+            rdmaBufferManager.put(postRecvWrArray[i].rdmaBuf);
+          }
         }
       }
 
