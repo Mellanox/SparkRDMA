@@ -380,37 +380,43 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     val rdmaChannel = getRdmaChannel(rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort, true)
 
     val fetchRemotePartitionLocationPromise: Promise[Seq[RdmaPartitionLocation]] = Promise()
-    // We assume that only one consumer mutates partitionLocationsMap for this particular
-    // (shuffleId, partitionId)
-    require (partitionLocationsMap.get(shuffleId) != null)
-    partitionLocationsMap.get(shuffleId).put(partitionId, PartitionLocation(
-      new ArrayBuffer[RdmaPartitionLocation], Some(fetchRemotePartitionLocationPromise)))
 
-    val buffers = new RdmaFetchPartitionLocationsRpcMsg(localRdmaShuffleManagerId.get.host,
-      localRdmaShuffleManagerId.get.port, shuffleId, partitionId).toRdmaByteBufferManagedBuffers(
+    require (partitionLocationsMap.get(shuffleId) != null)
+    val prevPartitionLocation = partitionLocationsMap.get(shuffleId).putIfAbsent(
+      partitionId,
+      PartitionLocation(
+        new ArrayBuffer[RdmaPartitionLocation],
+        Some(fetchRemotePartitionLocationPromise)))
+
+    if (prevPartitionLocation == null) {
+      val buffers = new RdmaFetchPartitionLocationsRpcMsg(localRdmaShuffleManagerId.get.host,
+        localRdmaShuffleManagerId.get.port, shuffleId, partitionId).toRdmaByteBufferManagedBuffers(
         getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
-    val listener = new RdmaCompletionListener {
-      override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-      override def onFailure(e: Throwable): Unit = {
-        buffers.foreach(_.release())
-        logError("Failed to send RdmaFetchPartitionLocationsRpcMsg to driver " + e)
+      val listener = new RdmaCompletionListener {
+        override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
+        override def onFailure(e: Throwable): Unit = {
+          buffers.foreach(_.release())
+          logError("Failed to send RdmaFetchPartitionLocationsRpcMsg to driver " + e)
+        }
       }
-    }
 
-    try {
-      rdmaChannel.rdmaSendInQueue(
-        listener,
-        buffers.map(_.getAddress),
-        buffers.map(_.getLkey),
-        buffers.map(_.getLength.toInt))
-    } catch {
-      case e: Exception =>
-        listener.onFailure(e)
-        throw e
-    }
+      try {
+        rdmaChannel.rdmaSendInQueue(
+          listener,
+          buffers.map(_.getAddress),
+          buffers.map(_.getLkey),
+          buffers.map(_.getLength.toInt))
+      } catch {
+        case e: Exception =>
+          listener.onFailure(e)
+          throw e
+      }
 
-    fetchRemotePartitionLocationPromise.future
+      fetchRemotePartitionLocationPromise.future
+    } else {
+      prevPartitionLocation.promise.get.future
+    }
   }
 
   def getRdmaChannel(host: String, port: Int, mustRetry: Boolean): RdmaChannel =
