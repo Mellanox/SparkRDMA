@@ -54,7 +54,7 @@ class RdmaShuffleConf(conf: SparkConf) {
   private def getRdmaConfSizeAsBytesInRange(name: String, defaultValue: String, min: String,
       max: String) = conf.getSizeAsBytes(toRdmaConfKey(name), defaultValue) match {
         case i if i >= Utils.byteStringAsBytes(min) && i <= Utils.byteStringAsBytes(max) => i
-        case _ => throw new IllegalArgumentException
+        case _ => Utils.byteStringAsBytes(defaultValue)
       }
 
   private def getConfKey(name: String, defaultValue: String): String = conf.get(name, defaultValue)
