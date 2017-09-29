@@ -20,45 +20,31 @@ package org.apache.spark.shuffle.rdma
 import java.io._
 import java.nio.charset.Charset
 
-case class HostPort(var host: String, var port: Int)
-case class RdmaBlockLocation(var address: Long, var length: Long, var mKey: Int)
+import org.apache.spark.storage.BlockManagerId
+
+case class RdmaBlockLocation(var address: Long, var length: Int, var mKey: Int)
 
 class RdmaPartitionLocation(
-    var hostPort: HostPort,
-    var partitionId : Int,
+    var rdmaShuffleManagerId: RdmaShuffleManagerId,
+    var partitionId: Int,
     var rdmaBlockLocation: RdmaBlockLocation) {
 
-  private var hostnameInUtf: Array[Byte] = _
-  private def this() = this(HostPort(null, 0), 0, null)  // For deserialization only
+  private def this() = this(null, 0, null)  // For deserialization only
 
   def serializedLength: Int = {
-    if (hostnameInUtf == null) {
-      hostnameInUtf = hostPort.host.getBytes(Charset.forName("UTF-8"))
-    }
-    2 + hostnameInUtf.length + 4 + 4 + 8 + 4 + 4
+    rdmaShuffleManagerId.serializedLength + 4 + 8 + 4 + 4
   }
 
   def write(out: DataOutputStream) {
-    if (hostnameInUtf == null) {
-      hostnameInUtf = hostPort.host.getBytes(Charset.forName("UTF-8"))
-    }
-    out.writeShort(hostnameInUtf.length)
-    out.write(hostnameInUtf)
-    hostnameInUtf = null
-    out.writeInt(hostPort.port)
+    rdmaShuffleManagerId.write(out)
     out.writeInt(partitionId)
     out.writeLong(rdmaBlockLocation.address)
-    out.writeInt(rdmaBlockLocation.length.toInt)
+    out.writeInt(rdmaBlockLocation.length)
     out.writeInt(rdmaBlockLocation.mKey)
   }
 
   def read(in: DataInputStream) {
-    val hostLength = in.readShort()
-    hostnameInUtf = new Array[Byte](hostLength)
-    in.read(hostnameInUtf, 0, hostLength)
-    hostPort.host = new String(hostnameInUtf, "UTF-8")
-    hostnameInUtf = null
-    hostPort.port = in.readInt()
+    rdmaShuffleManagerId = RdmaShuffleManagerId(in)
     partitionId = in.readInt()
     rdmaBlockLocation = RdmaBlockLocation(in.readLong(), in.readInt(), in.readInt())
   }
@@ -67,6 +53,94 @@ class RdmaPartitionLocation(
 object RdmaPartitionLocation {
   def apply(in: DataInputStream): RdmaPartitionLocation = {
     val obj = new RdmaPartitionLocation()
+    obj.read(in)
+    obj
+  }
+}
+
+class RdmaShuffleManagerId(var host: String, var port: Int, var blockManagerId: BlockManagerId) {
+  private var hostnameInUtf: Array[Byte] = _
+  private var executorIdInUtf: Array[Byte] = _
+  private var blockManagerHostNameInUtf: Array[Byte] = _
+
+  // For deserialization only
+  private def this() = this(null, 0, null)
+
+  override def toString: String = s"RdmaShuffleManagerId($host, $port, $blockManagerId)"
+
+  override def hashCode: Int = blockManagerId.hashCode
+
+  def serializedLength: Int = {
+    if (hostnameInUtf == null) {
+      hostnameInUtf = host.getBytes(Charset.forName("UTF-8"))
+    }
+    if (executorIdInUtf == null) {
+      executorIdInUtf = blockManagerId.executorId.getBytes(Charset.forName("UTF-8"))
+    }
+    if (blockManagerHostNameInUtf == null) {
+      blockManagerHostNameInUtf = blockManagerId.host.getBytes(Charset.forName("UTF-8"))
+    }
+    2 + hostnameInUtf.length + 4 + 2 + executorIdInUtf.length + 2 +
+      blockManagerHostNameInUtf.length + 4
+  }
+
+  def write(out: DataOutputStream) {
+    if (hostnameInUtf == null) {
+      hostnameInUtf = host.getBytes(Charset.forName("UTF-8"))
+    }
+    out.writeShort(hostnameInUtf.length)
+    out.write(hostnameInUtf)
+
+    out.writeInt(port)
+
+    if (executorIdInUtf == null) {
+      executorIdInUtf = blockManagerId.executorId.getBytes(Charset.forName("UTF-8"))
+    }
+    out.writeShort(executorIdInUtf.length)
+    out.write(executorIdInUtf)
+
+    if (blockManagerHostNameInUtf == null) {
+      blockManagerHostNameInUtf = blockManagerId.host.getBytes(Charset.forName("UTF-8"))
+    }
+    out.writeShort(blockManagerHostNameInUtf.length)
+    out.write(blockManagerHostNameInUtf)
+
+    out.writeInt(blockManagerId.port)
+  }
+
+  def read(in: DataInputStream) {
+    var length = in.readShort()
+    hostnameInUtf = new Array[Byte](length)
+    in.read(hostnameInUtf, 0, length)
+    host = new String(hostnameInUtf, "UTF-8")
+
+    port = in.readInt()
+
+    length = in.readShort()
+    executorIdInUtf = new Array[Byte](length)
+    in.read(executorIdInUtf, 0, length)
+    val executorId = new String(executorIdInUtf, "UTF-8")
+
+    length = in.readShort()
+    blockManagerHostNameInUtf = new Array[Byte](length)
+    in.read(blockManagerHostNameInUtf, 0, length)
+    val blockManagerHost = new String(blockManagerHostNameInUtf, "UTF-8")
+
+    val blockManagerPort = in.readInt()
+    blockManagerId = BlockManagerId(executorId, blockManagerHost, blockManagerPort)
+  }
+
+  override def equals(that: Any): Boolean = that match {
+    case id: RdmaShuffleManagerId =>
+      port == id.port && host == id.host && blockManagerId == id.blockManagerId
+    case _ =>
+      false
+  }
+}
+
+object RdmaShuffleManagerId {
+  def apply(in: DataInputStream): RdmaShuffleManagerId = {
+    val obj = new RdmaShuffleManagerId()
     obj.read(in)
     obj
   }

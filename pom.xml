@@ -5,10 +5,12 @@
                       http://maven.apache.org/maven-v4_0_0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.mellanox.rdma</groupId>
+  <groupId>com.github.mellanox</groupId>
   <artifactId>spark-rdma</artifactId>
   <version>1.0</version>
-  <name>SparkRDMA Shuffle Manager Plugin</name>
+  <name>${project.artifactId}</name>
+  <description>SparkRDMA Shuffle Manager Plugin</description>
+  <inceptionYear>2017</inceptionYear>
   <packaging>jar</packaging>
 
   <licenses>
@@ -32,7 +34,6 @@
     <encoding>UTF-8</encoding>
     <scala.version>2.11.8</scala.version>
     <scala.compat.version>2.11</scala.compat.version>
-    <spark.version>2.0.0</spark.version>
   </properties>
 
   <profiles>
@@ -40,6 +41,18 @@
       <id>spark-2.0.0</id>
       <properties>
         <spark.version>2.0.0</spark.version>
+      </properties>
+    </profile>
+    <profile>
+      <id>spark-2.1.0</id>
+      <properties>
+        <spark.version>2.1.0</spark.version>
+      </properties>
+    </profile>
+    <profile>
+      <id>spark-2.2.0</id>
+      <properties>
+        <spark.version>2.2.0</spark.version>
       </properties>
     </profile>
   </profiles>
@@ -54,11 +67,22 @@
     <dependency>
       <groupId>com.ibm.disni</groupId>
       <artifactId>disni</artifactId>
-      <version>1.2</version>
+      <version>1.3</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>log4j</groupId>
+          <artifactId>log4j</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
   </dependencies>
 
   <build>
+    <finalName>${project.artifactId}-${project.version}-for-spark-${spark.version}</finalName>
     <plugins>
       <plugin>
         <groupId>org.scala-tools</groupId>
