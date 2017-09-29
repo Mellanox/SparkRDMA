@@ -22,5 +22,5 @@ import java.util.EventListener;
 
 interface RdmaCompletionListener extends EventListener {
   void onSuccess(ByteBuffer buf);
-  void onFailure(Throwable exception);
+  void onFailure(Throwable exception); // Must handle multiple calls
 }

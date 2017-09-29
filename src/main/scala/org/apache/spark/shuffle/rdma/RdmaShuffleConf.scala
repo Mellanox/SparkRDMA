@@ -17,7 +17,7 @@
 
 package org.apache.spark.shuffle.rdma
 
-import org.apache.spark.SparkConf
+import org.apache.spark.{SparkConf, SPARK_VERSION}
 import org.apache.spark.shuffle.rdma.ShuffleWriterMethod.ShuffleWriterMethod
 import org.apache.spark.util.Utils
 
@@ -25,6 +25,22 @@ object ShuffleWriterMethod extends Enumeration {
   type ShuffleWriterMethod = Value
   val Wrapper, ChunkedPartitionAgg = Value
   def withNameOpt(s: String): Option[Value] = values.find(_.toString == s)
+}
+
+object SparkVersionSupport {
+  private val versionRegex = """^(\d+)\.(\d+)(\..*)?$""".r
+  val majorVersion: Int = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
+    case Some(m) => m.group(1).toInt
+    case None => throw new IllegalArgumentException("Unable to parse Spark major version from" +
+      " version string: " + SPARK_VERSION)
+  }
+  if (majorVersion != 2)
+    throw new IllegalArgumentException("SparkRDMA only supports Spark versions 2.x")
+  val minorVersion: Int = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
+    case Some(m) => m.group(2).toInt
+    case None => throw new IllegalArgumentException("Unable to parse Spark minor version from" +
+      " version string: " + SPARK_VERSION)
+  }
 }
 
 class RdmaShuffleConf(conf: SparkConf) {
@@ -38,7 +54,7 @@ class RdmaShuffleConf(conf: SparkConf) {
   private def getRdmaConfSizeAsBytesInRange(name: String, defaultValue: String, min: String,
       max: String) = conf.getSizeAsBytes(toRdmaConfKey(name), defaultValue) match {
         case i if i >= Utils.byteStringAsBytes(min) && i <= Utils.byteStringAsBytes(max) => i
-        case _ => throw new IllegalArgumentException
+        case _ => Utils.byteStringAsBytes(defaultValue)
       }
 
   private def getConfKey(name: String, defaultValue: String): String = conf.get(name, defaultValue)
@@ -53,12 +69,17 @@ class RdmaShuffleConf(conf: SparkConf) {
   //
   // RDMA resource parameters
   //
-  lazy val recvQueueDepth: Int = getRdmaConfIntInRange("recvQueueDepth", 1024, 0, 65535)
-  lazy val sendQueueDepth: Int = getRdmaConfIntInRange("sendQueueDepth", 1024, 0, 65535)
-  lazy val recvWrSize: Int = getRdmaConfSizeAsBytesInRange("recvWrSize", "4k", "0", "1m").toInt
+  lazy val recvQueueDepth: Int = getRdmaConfIntInRange("recvQueueDepth", 2048, 256, 65535)
+  lazy val sendQueueDepth: Int = getRdmaConfIntInRange("sendQueueDepth", 4096, 256, 65535)
+  lazy val recvWrSize: Int = getRdmaConfSizeAsBytesInRange("recvWrSize", "4k", "2k", "1m").toInt
 
   //
-  // Shuffle write configuration
+  // CPU Affinity Settings
+  //
+  lazy val cpuList: String = getRdmaConfKey("cpuList", "")
+
+  //
+  // Shuffle writer configuration
   //
   lazy val shuffleWriterMethod: ShuffleWriterMethod = ShuffleWriterMethod.withNameOpt(
     getRdmaConfKey("shuffleWriterMethod", "Wrapper")).getOrElse(ShuffleWriterMethod.Wrapper)
@@ -67,7 +88,7 @@ class RdmaShuffleConf(conf: SparkConf) {
   lazy val shuffleWriteFlushSize: Long = getRdmaConfSizeAsBytesInRange(
     "shuffleWriteFlushSize", "256k", "4k", "128m")
   lazy val shuffleWriteBlockSize: Long = getRdmaConfSizeAsBytesInRange(
-    "shuffleWriteBlockSize", "4m", "4k", "512m")
+    "shuffleWriteBlockSize", "8m", "4k", "512m")
   lazy val shuffleWriteMaxInMemoryStoragePerExecutor: Long = getRdmaConfSizeAsBytesInRange(
     "shuffleWriteMaxInMemoryStoragePerExecutor", "25g", "0", "10t")
   // TODO: Limit to machine memory
@@ -76,11 +97,20 @@ class RdmaShuffleConf(conf: SparkConf) {
   // Shuffle reader configuration
   //
   lazy val shuffleReadBlockSize: Long = getRdmaConfSizeAsBytesInRange(
-    "shuffleReadBlockSize", "4m", "128k", "512m")
-  lazy val maxBytesInFlight: Long = getRdmaConfSizeAsBytesInRange("maxBytesInFlight", "100m", "48m",
-    "100g")
-  lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "0", "1g")
-  lazy val maxAggPrealloc: Long = getRdmaConfSizeAsBytesInRange("maxAggPrealloc", "50m", "0", "10g")
+    "shuffleReadBlockSize", "8m", "0", "512m")
+  lazy val maxBytesInFlight: Long = getRdmaConfSizeAsBytesInRange(
+    "maxBytesInFlight", "128m", "128k", "100g")
+  lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "2m", "1g")
+  lazy val maxAggPrealloc: Long = getRdmaConfSizeAsBytesInRange("maxAggPrealloc", "0", "0", "10g")
+  // Remote fetch block statistics
+  lazy val collectShuffleReaderStats: Boolean = conf.getBoolean(
+    toRdmaConfKey("collectShuffleReaderStats"),
+    defaultValue = false)
+  lazy val partitionLocationFetchTimeout: Int = getRdmaConfIntInRange(
+    "partitionLocationFetchTimeout", 30000, 1000, Integer.MAX_VALUE)
+  lazy val fetchTimeBucketSizeInMs: Int = getRdmaConfIntInRange("fetchTimeBucketSizeInMs", 300, 5,
+    60000)
+  lazy val fetchTimeNumBuckets: Int = getRdmaConfIntInRange("fetchTimeNumBuckets", 5, 2, 100)
 
   //
   // Addressing and connection configuration
@@ -89,4 +119,9 @@ class RdmaShuffleConf(conf: SparkConf) {
   lazy val driverPort: Int = getRdmaConfIntInRange("driverPort", 0, 1025, 65535)
   lazy val executorPort: Int = getRdmaConfIntInRange("executorPort", 0, 1025, 65535)
   lazy val portMaxRetries: Int = conf.getInt("spark.port.maxRetries", 16)
+  lazy val rdmaCmEventTimeout: Int = getRdmaConfIntInRange("rdmaCmEventTimeout", 20000, -1, 60000)
+  lazy val teardownListenTimeout: Int = getRdmaConfIntInRange("teardownListenTimeout", 50, -1,
+    60000)
+  lazy val resolvePathTimeout: Int = getRdmaConfIntInRange("resolvePathTimeout", 2000, -1, 60000)
+  lazy val maxConnectionAttempts: Int = getRdmaConfIntInRange("maxConnectionAttempts", 5, 1, 100)
 }

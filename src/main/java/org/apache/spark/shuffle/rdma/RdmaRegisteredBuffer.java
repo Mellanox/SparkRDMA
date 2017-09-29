@@ -30,10 +30,10 @@ public class RdmaRegisteredBuffer {
   private final AtomicInteger refCount = new AtomicInteger(0);
   private int blockOffset = 0;
 
-  public RdmaRegisteredBuffer(RdmaBufferManager rdmaBufferManager, int length, boolean isAggBlock)
+  public RdmaRegisteredBuffer(RdmaBufferManager rdmaBufferManager, int length)
       throws IOException {
     this.rdmaBufferManager = rdmaBufferManager;
-    this.rdmaBuffer = rdmaBufferManager.get(length, isAggBlock);
+    this.rdmaBuffer = rdmaBufferManager.get(length);
     assert this.rdmaBuffer != null;
   }
 
@@ -52,7 +52,13 @@ public class RdmaRegisteredBuffer {
   void release() {
     int count = refCount.decrementAndGet();
 
-    if (count == 0) {
+    if (count <= 0) {
+      free();
+    }
+  }
+
+  private synchronized void free() {
+    if (rdmaBuffer != null) {
       if (rdmaBufferManager != null) {
         rdmaBufferManager.put(rdmaBuffer);
       } else {
@@ -62,7 +68,7 @@ public class RdmaRegisteredBuffer {
     }
   }
 
-  private long getRegisteredAddress() {
+  long getRegisteredAddress() {
     return rdmaBuffer.getAddress();
   }
 

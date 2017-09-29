@@ -24,8 +24,10 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.concurrent.*;
+import java.util.Random;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -49,9 +51,11 @@ class RdmaNode {
   private IbvPd ibvPd;
   private InetSocketAddress localInetSocketAddress;
   private InetAddress driverInetAddress;
+  private final ArrayList<Integer> cpuArrayList = new ArrayList<>();
+  private int cpuIndex = 0;
 
   RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
-           final RdmaCompletionListener receiveListener) throws Exception {
+      final RdmaCompletionListener receiveListener) throws Exception {
     this.receiveListener = receiveListener;
     this.conf = conf;
 
@@ -77,11 +81,13 @@ class RdmaNode {
           break;
         }
         logger.info("Failed to bind to port {} on iteration {}", bindPort, i);
-        bindPort = bindPort != 0 ? bindPort+1 : 0;
+        bindPort = bindPort != 0 ? bindPort + 1 : 0;
       }
       if (err != 0) {
         throw new IOException("Unable to bind, err: " + err);
       }
+
+      initCpuArrayList();
 
       err = listenerRdmaCmId.listen(BACKLOG);
       if (err != 0) {
@@ -107,12 +113,13 @@ class RdmaNode {
     }
 
     listeningThread = new Thread(() -> {
-      logger.info("Starting RdmaNode Listening Server");
+      logger.info("Starting RdmaNode Listening Server, listening on: " + localInetSocketAddress);
 
+      final int teardownListenTimeout = conf.teardownListenTimeout();
       while (runThread.get()) {
         try {
           // Wait for next event
-          RdmaCmEvent event = cmChannel.getCmEvent(50);
+          RdmaCmEvent event = cmChannel.getCmEvent(teardownListenTimeout);
           if (event == null) {
             continue;
           }
@@ -123,13 +130,21 @@ class RdmaNode {
 
           InetSocketAddress inetSocketAddress = (InetSocketAddress)cmId.getDestination();
 
-          // TODO: Handle reject on redundant connection, and manage mutual connect
           if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_CONNECT_REQUEST.ordinal()) {
             RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
             if (rdmaChannel != null) {
-              logger.warn("Received a redundant RDMA connection request for " +
-                "inetSocketAddress: {}", inetSocketAddress);
-              continue;
+              if (rdmaChannel.isError()) {
+                logger.warn("Received a redundant RDMA connection request from " +
+                  inetSocketAddress + ", which already has an older connection in error state." +
+                  " Removing the old connection and creating a new one");
+                passiveRdmaChannelMap.remove(inetSocketAddress);
+                rdmaChannel.stop();
+              } else {
+                logger.warn("Received a redundant RDMA connection request from " +
+                  inetSocketAddress + ", rejecting the request");
+                // TODO: Add reject initiation code once disni implements/exports reject
+                continue;
+              }
             }
 
             boolean isRpc = false;
@@ -146,55 +161,133 @@ class RdmaNode {
               receiveListener,
               cmId,
               isRpc,
-              true);
+              true,
+              getNextCpuVector());
             if (passiveRdmaChannelMap.putIfAbsent(inetSocketAddress, rdmaChannel) != null) {
-              logger.warn("Race creating the RDMA Channel for inetSocketAddress: {}",
-                inetSocketAddress);
+              logger.warn("Race in creating an RDMA Channel for " + inetSocketAddress);
               rdmaChannel.stop();
               continue;
             }
 
-            rdmaChannel.accept();
+            try {
+              rdmaChannel.accept();
+            } catch (IOException ioe) {
+              logger.error("Error in accept call on a passive RdmaChannel: " + ioe);
+              passiveRdmaChannelMap.remove(inetSocketAddress);
+              rdmaChannel.stop();
+            }
           } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_ESTABLISHED.ordinal()) {
             RdmaChannel rdmaChannel = passiveRdmaChannelMap.get(inetSocketAddress);
             if (rdmaChannel == null) {
-              logger.warn("Received Established Event for inetSocketAddress not in the " +
-                "passiveRdmaChannelMap, {}", inetSocketAddress);
+              logger.warn("Received an RDMA CM Established Event from " + inetSocketAddress +
+                ", which has no local matching connection. Ignoring");
               continue;
             }
 
-            rdmaChannel.finalizeConnection();
+            if (rdmaChannel.isError()) {
+              logger.warn("Received a redundant RDMA connection request from " + inetSocketAddress +
+                ", with a local connection in error state. Removing the old connection and " +
+                "aborting");
+              passiveRdmaChannelMap.remove(inetSocketAddress);
+              rdmaChannel.stop();
+            } else {
+              rdmaChannel.finalizeConnection();
+            }
           } else if (eventType == RdmaCmEvent.EventType.RDMA_CM_EVENT_DISCONNECTED.ordinal()) {
             RdmaChannel rdmaChannel = passiveRdmaChannelMap.remove(inetSocketAddress);
             if (rdmaChannel == null) {
-              logger.warn("Received Disconnect Event for inetSocketAddress not in the " +
-                "passiveRdmaChannelMap, {}", inetSocketAddress);
+              logger.info("Received an RDMA CM Disconnect Event from " + inetSocketAddress +
+                ", which has no local matching connection. Ignoring");
               continue;
             }
 
             rdmaChannel.stop();
           } else {
-            logger.info("Unexpected CM Event {}", eventType);
+            logger.info("Received an unexpected CM Event {}", eventType);
           }
         } catch (Exception e) {
-          // TODO: Improve handling of exceptions
           e.printStackTrace();
+          throw new RuntimeException("Exception in RdmaNode listening thread " + e);
         }
       }
       logger.info("Exiting RdmaNode Listening Server");
-    }, "RdmaNode connection listening thread");
+    },
+    "RdmaNode connection listening thread");
 
     runThread.set(true);
     listeningThread.start();
   }
 
+  private void initCpuArrayList() throws IOException {
+    logger.info("cpuList from configuration file: {}", conf.cpuList());
+
+    java.util.function.Consumer<Integer> addCpuToList = (cpu) -> {
+      // Add CPUs to the list while shuffling the order of the list, so that multiple RdmaNodes on
+      // this machine will have a better change to get different CPUs assigned to them
+      cpuArrayList.add(
+        cpuArrayList.isEmpty() ? 0 : new Random().nextInt(cpuArrayList.size()),
+        cpu);
+    };
+
+    final int maxCpu = Runtime.getRuntime().availableProcessors() - 1;
+    final int maxUsableCpu = Math.min(Runtime.getRuntime().availableProcessors(),
+      listenerRdmaCmId.getVerbs().getNumCompVectors()) - 1;
+    if (maxUsableCpu < maxCpu - 1) {
+      logger.warn("IbvContext supports only " + (maxUsableCpu + 1) + " CPU cores, while there are" +
+        " " + (maxCpu + 1) + " CPU cores in the system. This may lead to under-utilization of the" +
+        " system's CPU cores. This limitation may be adjustable in the RDMA device configuration.");
+    }
+
+    for (String cpuRange : conf.cpuList().split(",")) {
+      final String[] cpuRangeArray = cpuRange.split("-");
+      int cpuStart, cpuEnd;
+
+      try {
+        cpuStart = cpuEnd = Integer.parseInt(cpuRangeArray[0].trim());
+        if (cpuRangeArray.length > 1) {
+          cpuEnd = Integer.parseInt(cpuRangeArray[1].trim());
+        }
+
+        if (cpuStart > cpuEnd || cpuEnd > maxCpu) {
+          logger.warn("Invalid cpuList!  start: {}, end: {}, max: {}", cpuStart, cpuEnd, maxCpu);
+          throw new NumberFormatException();
+        }
+      } catch (NumberFormatException e) {
+        logger.info("Empty or failure parsing the cpuList. Defaulting to all available CPUs");
+        cpuArrayList.clear();
+        break;
+      }
+
+      for (int cpu = cpuStart; cpu <= Math.min(maxUsableCpu, cpuEnd); cpu++) {
+        addCpuToList.accept(cpu);
+      }
+    }
+
+    if (cpuArrayList.isEmpty()) {
+      for (int cpu = 0; cpu <= maxUsableCpu; cpu++) {
+        addCpuToList.accept(cpu);
+      }
+    }
+
+    logger.info("Using cpuList: {}", cpuArrayList);
+  }
+
+  private int getNextCpuVector() {
+    return cpuArrayList.get(cpuIndex++ % cpuArrayList.size());
+  }
+
   public RdmaBufferManager getRdmaBufferManager() { return rdmaBufferManager; }
 
-  public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr)
+  public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr, boolean mustRetry)
       throws IOException, InterruptedException {
-    RdmaChannel rdmaChannel;
+    final long startTime = System.nanoTime();
+    final int maxConnectionAttempts = conf.maxConnectionAttempts();
+    final long connectionTimeout = maxConnectionAttempts * conf.rdmaCmEventTimeout();
+    long elapsedTime = 0;
+    int connectionAttempts = 0;
 
-    while (true) {
+    RdmaChannel rdmaChannel = null;
+    do {
       rdmaChannel = activeRdmaChannelMap.get(remoteAddr);
       if (rdmaChannel == null) {
         rdmaChannel = new RdmaChannel(
@@ -204,38 +297,58 @@ class RdmaNode {
           false,
           receiveListener,
           false,
-          false);
+          false,
+          getNextCpuVector());
 
         RdmaChannel actualRdmaChannel = activeRdmaChannelMap.putIfAbsent(remoteAddr, rdmaChannel);
         if (actualRdmaChannel != null) {
           rdmaChannel = actualRdmaChannel;
         } else {
           try {
-            long startTime = System.nanoTime();
             rdmaChannel.connect(remoteAddr);
             logger.info("Established connection to " + remoteAddr + " in " +
               (System.nanoTime() - startTime) / 1000000 + " ms");
           } catch (IOException e) {
-            logger.error("connect failed");
+            ++connectionAttempts;
             activeRdmaChannelMap.remove(remoteAddr, rdmaChannel);
             rdmaChannel.stop();
-            throw e;
+            if (mustRetry) {
+              if (connectionAttempts == maxConnectionAttempts) {
+                logger.error("Failed to connect to " + remoteAddr + " after " +
+                  maxConnectionAttempts + " attempts, aborting");
+                throw e;
+              } else {
+                logger.error("Failed to connect to " + remoteAddr + ", attempt " +
+                  connectionAttempts + " of " + maxConnectionAttempts + " with exception: " + e);
+                continue;
+              }
+            } else {
+              logger.error("Failed to connect to " + remoteAddr + " with exception: " + e);
+            }
           }
         }
       }
 
-      // TODO: Need to handle failures, add timeout, handle dead connections
-      // TODO: Limit number of iterations in while loop
+      if (rdmaChannel.isError()) {
+        activeRdmaChannelMap.remove(remoteAddr, rdmaChannel);
+        rdmaChannel.stop();
+        continue;
+      }
+
       if (!rdmaChannel.isConnected()) {
         rdmaChannel.waitForActiveConnection();
+        elapsedTime = (System.nanoTime() - startTime) / 1000000;
       }
 
       if (rdmaChannel.isConnected()) {
         break;
       }
+    } while (mustRetry && (connectionTimeout - elapsedTime) > 0);
+
+    if (mustRetry && (rdmaChannel == null || !rdmaChannel.isConnected())) {
+      throw new IOException("Timeout in establishing a connection to " + remoteAddr.toString());
     }
 
-    assert(rdmaChannel.isConnected());
     return rdmaChannel;
   }
 

@@ -23,13 +23,14 @@ import java.nio.charset.Charset
 
 import org.slf4j.LoggerFactory
 import scala.collection.mutable.ArrayBuffer
-
 import org.apache.spark.internal.Logging
 import org.apache.spark.shuffle.rdma.RdmaRpcMsgType.RdmaRpcMsgType
+import org.apache.spark.storage.BlockManagerId
 
 object RdmaRpcMsgType extends Enumeration {
   type RdmaRpcMsgType = Value
-  val PublishPartitionLocations, FetchPartitionLocations, ExecutorHello, AnnounceExecutors = Value
+  val PublishPartitionLocations, FetchPartitionLocations, RdmaShuffleManagerHello,
+    AnnounceRdmaShuffleManagers = Value
 }
 
 trait RdmaRpcMsg {
@@ -76,10 +77,10 @@ object RdmaRpcMsg extends Logging {
         RdmaPublishPartitionLocationsRpcMsg(in)
       case RdmaRpcMsgType.FetchPartitionLocations =>
         RdmaFetchPartitionLocationsRpcMsg(in)
-      case RdmaRpcMsgType.ExecutorHello =>
-        RdmaExecutorHelloRpcMsg(in)
-      case RdmaRpcMsgType.AnnounceExecutors =>
-        RdmaAnnounceExecutorsRpcMsg(in)
+      case RdmaRpcMsgType.RdmaShuffleManagerHello =>
+        RdmaShuffleManagerHelloRpcMsg(in)
+      case RdmaRpcMsgType.AnnounceRdmaShuffleManagers =>
+        RdmaAnnounceRdmaShuffleManagersRpcMsg(in)
       case _ =>
         logger.warn("Received an unidentified RPC")
         null
@@ -89,12 +90,14 @@ object RdmaRpcMsg extends Logging {
 
 class RdmaPublishPartitionLocationsRpcMsg(
     var shuffleId: Int,
+    var partitionId: Int,
     var rdmaPartitionLocations: Seq[RdmaPartitionLocation])
   extends RdmaRpcMsg {
-  private final val overhead: Int = 1 + 4 // 1 for isLast bool per segment, + 4 for shuffleId
+  // 1 for isLast bool per segment, + 4 for shuffleId + 4 for partitionId
+  private final val overhead: Int = 1 + 4 + 4
   var isLast = false
 
-  private def this() = this(0, null)  // For deserialization only
+  private def this() = this(0, -1, null)  // For deserialization only
 
   override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.PublishPartitionLocations
 
@@ -102,11 +105,11 @@ class RdmaPublishPartitionLocationsRpcMsg(
     var segmentSizes = new ArrayBuffer[Int]
     segmentSizes += overhead
     for (rdmaPartitionLocation <- rdmaPartitionLocations) {
-      if (segmentSizes.last + rdmaPartitionLocation.serializedLength <= segmentSize) {
-        segmentSizes.update(segmentSizes.length - 1, segmentSizes.last +
-          rdmaPartitionLocation.serializedLength)
+      val serializedLength = rdmaPartitionLocation.serializedLength
+      if (segmentSizes.last + serializedLength <= segmentSize) {
+        segmentSizes.update(segmentSizes.length - 1, segmentSizes.last + serializedLength)
       } else {
-        segmentSizes += (overhead + rdmaPartitionLocation.serializedLength)
+        segmentSizes += (overhead + serializedLength)
       }
     }
 
@@ -121,15 +124,17 @@ class RdmaPublishPartitionLocationsRpcMsg(
       curOut = outs.next()
       curOut._1.writeBoolean(!outs.hasNext)
       curOut._1.writeInt(shuffleId)
+      curOut._1.writeInt(partitionId)
       curSegmentLength = overhead
     }
 
     nextOut()
     for (rdmaPartitionLocation <- rdmaPartitionLocations) {
-      if (curSegmentLength + rdmaPartitionLocation.serializedLength > curOut._2) {
+      val serializedLength = rdmaPartitionLocation.serializedLength
+      if (curSegmentLength + serializedLength > curOut._2) {
         nextOut()
       }
-      curSegmentLength += rdmaPartitionLocation.serializedLength
+      curSegmentLength += serializedLength
       rdmaPartitionLocation.write(curOut._1)
     }
   }
@@ -137,6 +142,7 @@ class RdmaPublishPartitionLocationsRpcMsg(
   override protected def read(in: DataInputStream): Unit = {
     isLast = in.readBoolean()
     shuffleId = in.readInt()
+    partitionId = in.readInt()
 
     val tmpRdmaPartitionLocations = new ArrayBuffer[RdmaPartitionLocation]
     scala.util.control.Exception.ignoring(classOf[EOFException]) {
@@ -171,10 +177,10 @@ class RdmaFetchPartitionLocationsRpcMsg(
     if (hostnameInUtf == null) {
       hostnameInUtf = host.getBytes(Charset.forName("UTF-8"))
     }
-    val length = 2 + hostnameInUtf.length + 4 + 4 + 4
-    require(length <= segmentSize, "RdmaBuffer RPC segment size is too small")
+    val serializedLength = 2 + hostnameInUtf.length + 4 + 4 + 4
+    require(serializedLength <= segmentSize, "RdmaBuffer RPC segment size is too small")
 
-    Array.fill(1) { length }
+    Array.fill(1) { serializedLength }
   }
 
   override protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit = {
@@ -208,65 +214,52 @@ object RdmaFetchPartitionLocationsRpcMsg {
   }
 }
 
-class RdmaExecutorHelloRpcMsg(var host: String, var port: Int) extends RdmaRpcMsg {
-  private def this() = this(null, 0)  // For deserialization only
+class RdmaShuffleManagerHelloRpcMsg(var rdmaShuffleManagerId: RdmaShuffleManagerId)
+    extends RdmaRpcMsg {
+  private def this() = this(null)  // For deserialization only
 
-  private var hostnameInUtf: Array[Byte] = _
-
-  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.ExecutorHello
+  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.RdmaShuffleManagerHello
 
   override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
-    if (hostnameInUtf == null) {
-      hostnameInUtf = host.getBytes(Charset.forName("UTF-8"))
-    }
-    val length = 2 + hostnameInUtf.length + 4
-    require(length <= segmentSize, "RdmaBuffer RPC segment size is too small")
+    val serializedLength = rdmaShuffleManagerId.serializedLength
+    require(serializedLength <= segmentSize, "RdmaBuffer RPC segment size is too small")
 
-    Array.fill(1) { length }
+    Array.fill(1) { serializedLength }
   }
 
   override protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit = {
     val out = outs.next()._1
-    if (hostnameInUtf == null) {
-      hostnameInUtf = host.getBytes(Charset.forName("UTF-8"))
-    }
-    out.writeShort(hostnameInUtf.length)
-    out.write(hostnameInUtf)
-    out.writeInt(port)
+    rdmaShuffleManagerId.write(out)
   }
 
   override protected def read(in: DataInputStream): Unit = {
-    val hostLength = in.readShort()
-    hostnameInUtf = new Array[Byte](hostLength)
-    in.read(hostnameInUtf, 0, hostLength)
-    host = new String(hostnameInUtf, "UTF-8")
-    port = in.readInt()
+    rdmaShuffleManagerId = RdmaShuffleManagerId(in)
   }
 }
 
-object RdmaExecutorHelloRpcMsg {
+object RdmaShuffleManagerHelloRpcMsg {
   def apply(in: DataInputStream): RdmaRpcMsg = {
-    val obj = new RdmaExecutorHelloRpcMsg()
+    val obj = new RdmaShuffleManagerHelloRpcMsg()
     obj.read(in)
     obj
   }
 }
 
-class RdmaAnnounceExecutorsRpcMsg(var executorList: Seq[HostPort]) extends RdmaRpcMsg {
+class RdmaAnnounceRdmaShuffleManagersRpcMsg(var rdmaShuffleManagerIds: Seq[RdmaShuffleManagerId])
+    extends RdmaRpcMsg {
   private def this() = this(null)  // For deserialization only
 
-  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.AnnounceExecutors
+  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.AnnounceRdmaShuffleManagers
 
   override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
     var segmentSizes = new ArrayBuffer[Int]
-    for (hostPort <- executorList) {
-      val hostnameInUtf = hostPort.host.getBytes(Charset.forName("UTF-8"))
-      val length = 2 + hostnameInUtf.length + 4
+    for (rdmaShuffleManagerId <- rdmaShuffleManagerIds) {
+      val serializedLength = rdmaShuffleManagerId.serializedLength
 
-      if (segmentSizes.nonEmpty && (segmentSizes.last + length <= segmentSize)) {
-        segmentSizes.update(segmentSizes.length - 1, segmentSizes.last + length)
+      if (segmentSizes.nonEmpty && (segmentSizes.last + serializedLength <= segmentSize)) {
+        segmentSizes.update(segmentSizes.length - 1, segmentSizes.last + serializedLength)
       } else {
-        segmentSizes += length
+        segmentSizes += serializedLength
       }
     }
 
@@ -283,38 +276,31 @@ class RdmaAnnounceExecutorsRpcMsg(var executorList: Seq[HostPort]) extends RdmaR
     }
 
     nextOut()
-    for (hostPort <- executorList) {
-      val hostnameInUtf = hostPort.host.getBytes(Charset.forName("UTF-8"))
-      val length = 2 + hostnameInUtf.length + 4
-      if (curSegmentLength + length > curOut._2) {
+    for (rdmaShuffleManagerId <- rdmaShuffleManagerIds) {
+      val serializedLength = rdmaShuffleManagerId.serializedLength
+
+      if (curSegmentLength + serializedLength > curOut._2) {
         nextOut()
       }
-      curSegmentLength += length
-      curOut._1.writeShort(hostnameInUtf.length)
-      curOut._1.write(hostnameInUtf)
-      curOut._1.writeInt(hostPort.port)
+      curSegmentLength += serializedLength
+      rdmaShuffleManagerId.write(curOut._1)
     }
   }
 
   override protected def read(in: DataInputStream): Unit = {
-    val tmpExecutorList = new ArrayBuffer[HostPort]
+    val tmpRdmaShuffleManagerIds = new ArrayBuffer[RdmaShuffleManagerId]
     scala.util.control.Exception.ignoring(classOf[EOFException]) {
       while (true) {
-        val hostLength = in.readShort()
-        val hostnameInUtf = new Array[Byte](hostLength)
-        in.read(hostnameInUtf, 0, hostLength)
-        val host = new String(hostnameInUtf, "UTF-8")
-        val port = in.readInt()
-        tmpExecutorList += HostPort(host, port)
+        tmpRdmaShuffleManagerIds += RdmaShuffleManagerId(in)
       }
     }
-    executorList = tmpExecutorList
+    rdmaShuffleManagerIds = tmpRdmaShuffleManagerIds
   }
 }
 
-object RdmaAnnounceExecutorsRpcMsg {
+object RdmaAnnounceRdmaShuffleManagersRpcMsg {
   def apply(in: DataInputStream): RdmaRpcMsg = {
-    val obj = new RdmaAnnounceExecutorsRpcMsg()
+    val obj = new RdmaAnnounceRdmaShuffleManagersRpcMsg()
     obj.read(in)
     obj
   }
