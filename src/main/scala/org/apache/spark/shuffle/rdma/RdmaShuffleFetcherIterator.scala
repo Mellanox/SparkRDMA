@@ -20,6 +20,7 @@ package org.apache.spark.shuffle.rdma
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.Timer
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.{ConcurrentLinkedDeque, LinkedBlockingQueue}
 import javax.annotation.concurrent.GuardedBy
 
@@ -42,7 +43,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
   extends Iterator[InputStream] with Logging {
   private[this] val startTime = System.currentTimeMillis
 
-  @volatile private[this] var numBlocksToFetch = 0
+  private[this] val numBlocksToFetch = new AtomicInteger(0)
   @volatile private[this] var isFetchPartitionLocationsInProgress = true
   @volatile private[this] var numBlocksProcessed = 0
 
@@ -233,7 +234,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
                 "Failed to fetch remote partition locations for ShuffleId: " + shuffleId +
                   " PartitionId: " + partitionId + " from driver: " + e)))
           }
-          numBlocksToFetch += 1
+          numBlocksToFetch.incrementAndGet()
           null
       }
     }
@@ -278,7 +279,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
           }
 
           for (aggregatedPartitionGroup <- aggregatedPartitionGroups) {
-            numBlocksToFetch += aggregatedPartitionGroup.locations.length
+            numBlocksToFetch.addAndGet(aggregatedPartitionGroup.locations.length)
 
             if (curBytesInFlight < maxBytesInFlight) {
               curBytesInFlight += aggregatedPartitionGroup.totalLength
@@ -294,7 +295,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
           // blocked by resultsQueue.take()
           // numBlocksToFetch and isFetchPartitionLocationsInProgress must be set in this exact
           // order to avoid race conditions in hasNext()
-          numBlocksToFetch += 1
+          numBlocksToFetch.incrementAndGet()
           isFetchPartitionLocationsInProgress = false
           insertDummyResult()
         } else {
@@ -305,7 +306,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
       timeoutFutureSeq.onFailure { case error =>
         // numBlocksToFetch and isFetchPartitionLocationsInProgress must be set in this exact
         // order to avoid race conditions in hasNext()
-        numBlocksToFetch += 1
+        numBlocksToFetch.incrementAndGet()
         isFetchPartitionLocationsInProgress = false
 
         error match {
@@ -354,14 +355,14 @@ private[spark] final class RdmaShuffleFetcherIterator(
           RdmaShuffleFetcherIterator.this.synchronized {
             resultsQueue.put(SuccessFetchResult(partitionId, localRdmaShuffleManagerId, in))
           }
-          numBlocksToFetch += 1
+          numBlocksToFetch.incrementAndGet()
         case _ =>
       }
     }
   }
 
   override def hasNext: Boolean = {
-    numBlocksProcessed < numBlocksToFetch || isFetchPartitionLocationsInProgress
+    numBlocksProcessed < numBlocksToFetch.get() || isFetchPartitionLocationsInProgress
   }
 
   override def next(): InputStream = {
