@@ -19,7 +19,7 @@ Testbed:
 Mellanox ConnectX-4 network adapter with 100GbE RoCE fabric, connected with a Mellanox Spectrum switch
 
 ## Wiki pages
-For more information on configuration, performance tuning and troubleshooting, please visit the [SparkRDMA GitHub Wiki](https://github.com/Mellanox/SparkRDMA/wiki/SparkRDMA-Wiki-pages)
+For more information on configuration, performance tuning and troubleshooting, please visit the [SparkRDMA GitHub Wiki](https://github.com/Mellanox/SparkRDMA/wiki)
 
 ## Runtime requirements
 * Apache Spark 2.0.0/2.1.0/2.2.0
