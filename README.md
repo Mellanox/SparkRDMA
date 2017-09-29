@@ -24,8 +24,38 @@ For more information on configuration, performance tuning and troubleshooting, p
 ## Runtime requirements
 * Apache Spark 2.0.0/2.1.0/2.2.0
 * Java 8
-* libdisni 1.3
 * An RDMA-supported network, e.g. RoCE or Infiniband
+
+## Installation
+
+### Obtain SparkRDMA and DiSNI binaries
+Please use the ["Releases"](https://github.com/Mellanox/SparkRDMA/releases) page to download pre-built binaries.
+<br>If you would like to build the project yourself, please refer to the ["Build"](https://github.com/Mellanox/SparkRDMA#build) section below.
+
+The pre-built binaries are packed as an archive that contains the following files:
+* spark-rdma-1.0-for-spark-2.0.0-jar-with-dependencies.jar
+* spark-rdma-1.0-for-spark-2.1.0-jar-with-dependencies.jar
+* spark-rdma-1.0-for-spark-2.2.0-jar-with-dependencies.jar
+* libdisni.so
+
+libdisni.so **must** be installed on every Spark Master and Worker (usually in /usr/lib)
+
+### Configuration
+
+Provide Spark the location of the SparkRDMA plugin jars by using the extraClassPath option.  For standalone mode this can
+be added to either spark-defaults.conf or any runtime configuration file.  For client mode this **must** be added to spark-defaults.conf. For Spark 2.0.0 (Replace with 2.1.0 or 2.2.0 according to your Spark version):
+```
+spark.driver.extraClassPath   /path/to/SparkRDMA/target/spark-rdma-1.0-for-spark-2.0.0-jar-with-dependencies.jar
+spark.executor.extraClassPath /path/to/SparkRDMA/target/spark-rdma-1.0-for-spark-2.0.0-jar-with-dependencies.jar
+```
+
+### Running
+
+To enable the SparkRDMA Shuffle Manager plugin, add the following line to either spark-defaults.conf or any runtime configuration file:
+
+```
+spark.shuffle.manager   org.apache.spark.shuffle.rdma.RdmaShuffleManager
+```
 
 ## Build
 
@@ -54,24 +84,6 @@ autoprepare.sh
 ./configure --with-jdk=/path/to/java8/jdk
 make
 make install
-```
-5. libdisni.so **must** be installed on every Spark Master and Worker (usually in /usr/lib)
-
-## Configuration
-
-Provide Spark the location of the SparkRDMA plugin jars by using the extraClassPath option.  For standalone mode this can
-be added to either spark-defaults.conf or any runtime configuration file.  For client mode this **must** be added to spark-defaults.conf. For Spark 2.0.0 (Replace with 2.1.0 or 2.2.0 according to your Spark version):
-```
-spark.driver.extraClassPath   /path/to/SparkRDMA/target/spark-rdma-1.0-for-spark-2.0.0-jar-with-dependencies.jar
-spark.executor.extraClassPath /path/to/SparkRDMA/target/spark-rdma-1.0-for-spark-2.0.0-jar-with-dependencies.jar
-```
-
-## Running
-
-To enable the SparkRDMA Shuffle Manager plugin, add the following line to either spark-defaults.conf or any runtime configuration file:
-
-```
-spark.shuffle.manager   org.apache.spark.shuffle.rdma.RdmaShuffleManager
 ```
 
 ## Community discussions and support
