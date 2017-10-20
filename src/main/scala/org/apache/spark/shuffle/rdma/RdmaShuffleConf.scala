@@ -69,7 +69,7 @@ class RdmaShuffleConf(conf: SparkConf) {
   //
   // RDMA resource parameters
   //
-  lazy val recvQueueDepth: Int = getRdmaConfIntInRange("recvQueueDepth", 2048, 256, 65535)
+  lazy val recvQueueDepth: Int = getRdmaConfIntInRange("recvQueueDepth", 1024, 256, 65535)
   lazy val sendQueueDepth: Int = getRdmaConfIntInRange("sendQueueDepth", 4096, 256, 65535)
   lazy val recvWrSize: Int = getRdmaConfSizeAsBytesInRange("recvWrSize", "4k", "2k", "1m").toInt
 
@@ -97,9 +97,9 @@ class RdmaShuffleConf(conf: SparkConf) {
   // Shuffle reader configuration
   //
   lazy val shuffleReadBlockSize: Long = getRdmaConfSizeAsBytesInRange(
-    "shuffleReadBlockSize", "8m", "0", "512m")
+    "shuffleReadBlockSize", "256k", "0", "512m")
   lazy val maxBytesInFlight: Long = getRdmaConfSizeAsBytesInRange(
-    "maxBytesInFlight", "128m", "128k", "100g")
+    "maxBytesInFlight", "1m", "128k", "100g")
   lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "2m", "1g")
   lazy val maxAggPrealloc: Long = getRdmaConfSizeAsBytesInRange("maxAggPrealloc", "0", "0", "10g")
   // Remote fetch block statistics
