@@ -24,27 +24,12 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.shuffle.{BaseShuffleHandle, IndexShuffleBlockResolver}
 import org.apache.spark.shuffle.rdma.writer.RdmaShuffleData
-import org.apache.spark.shuffle.rdma.writer.chunkedpartitionagg.RdmaChunkedPartitionAggShuffleData
 import org.apache.spark.shuffle.rdma.writer.wrapper.RdmaWrapperShuffleData
 import org.apache.spark.storage.ShuffleBlockId
 
 class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
     extends IndexShuffleBlockResolver(rdmaShuffleManager.conf) with Logging {
-  private val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
-
   private val rdmaShuffleDataMap = new ConcurrentHashMap[Int, RdmaShuffleData]
-
-  private var inMemoryReservedBytes = 0L
-  def reserveInMemoryBytes(bytes: Long): Boolean = synchronized {
-    if (inMemoryReservedBytes + bytes > rdmaShuffleConf.shuffleWriteMaxInMemoryStoragePerExecutor) {
-      false
-    } else {
-      inMemoryReservedBytes += bytes
-      true
-    }
-  }
-
-  def releaseInMemoryBytes(bytes: Long): Unit = synchronized { inMemoryReservedBytes -= bytes }
 
   def newShuffleWriter[K, V](baseShuffleHandle: BaseShuffleHandle[K, V, _]): Unit = synchronized {
     val shuffleId = baseShuffleHandle.shuffleId
@@ -52,16 +37,9 @@ class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
 
     var rdmaShuffleData = rdmaShuffleDataMap.get(shuffleId)
     if (rdmaShuffleData == null) {
-      rdmaShuffleData = rdmaShuffleConf.shuffleWriterMethod match {
-        case ShuffleWriterMethod.Wrapper =>
-          new RdmaWrapperShuffleData(shuffleId, numPartitions, rdmaShuffleManager)
-        case ShuffleWriterMethod.ChunkedPartitionAgg =>
-          new RdmaChunkedPartitionAggShuffleData(shuffleId, numPartitions, rdmaShuffleManager)
-      }
-
+      rdmaShuffleData = new RdmaWrapperShuffleData(shuffleId, numPartitions, rdmaShuffleManager)
       rdmaShuffleDataMap.put(shuffleId, rdmaShuffleData)
     }
-
     rdmaShuffleData.newShuffleWriter()
   }
 

@@ -18,14 +18,7 @@
 package org.apache.spark.shuffle.rdma
 
 import org.apache.spark.{SparkConf, SPARK_VERSION}
-import org.apache.spark.shuffle.rdma.ShuffleWriterMethod.ShuffleWriterMethod
 import org.apache.spark.util.Utils
-
-object ShuffleWriterMethod extends Enumeration {
-  type ShuffleWriterMethod = Value
-  val Wrapper, ChunkedPartitionAgg = Value
-  def withNameOpt(s: String): Option[Value] = values.find(_.toString == s)
-}
 
 object SparkVersionSupport {
   private val versionRegex = """^(\d+)\.(\d+)(\..*)?$""".r
@@ -81,17 +74,8 @@ class RdmaShuffleConf(conf: SparkConf) {
   //
   // Shuffle writer configuration
   //
-  lazy val shuffleWriterMethod: ShuffleWriterMethod = ShuffleWriterMethod.withNameOpt(
-    getRdmaConfKey("shuffleWriterMethod", "Wrapper")).getOrElse(ShuffleWriterMethod.Wrapper)
-  lazy val shuffleWriteChunkSize: Long = getRdmaConfSizeAsBytesInRange(
-    "shuffleWriteChunkSize", "128k", "4k", "128m")
-  lazy val shuffleWriteFlushSize: Long = getRdmaConfSizeAsBytesInRange(
-    "shuffleWriteFlushSize", "256k", "4k", "128m")
   lazy val shuffleWriteBlockSize: Long = getRdmaConfSizeAsBytesInRange(
     "shuffleWriteBlockSize", "8m", "4k", "512m")
-  lazy val shuffleWriteMaxInMemoryStoragePerExecutor: Long = getRdmaConfSizeAsBytesInRange(
-    "shuffleWriteMaxInMemoryStoragePerExecutor", "25g", "0", "10t")
-  // TODO: Limit to machine memory
 
   //
   // Shuffle reader configuration

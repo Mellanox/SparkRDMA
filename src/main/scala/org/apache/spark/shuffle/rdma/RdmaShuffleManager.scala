@@ -32,7 +32,6 @@ import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.{SparkListener, SparkListenerBlockManagerRemoved}
 import org.apache.spark.shuffle.{BaseShuffleHandle, _}
-import org.apache.spark.shuffle.rdma.writer.chunkedpartitionagg.RdmaChunkedPartitionAggShuffleWriter
 import org.apache.spark.shuffle.rdma.writer.wrapper.RdmaWrapperShuffleWriter
 import org.apache.spark.shuffle.sort.{SerializedShuffleHandle, SortShuffleManager}
 import org.apache.spark.storage.BlockManagerId
@@ -69,28 +68,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
           for (r <- publishMsg.rdmaPartitionLocations) {
             partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).
               synchronized {
-                if (rdmaShuffleConf.shuffleWriterMethod ==
-                  ShuffleWriterMethod.ChunkedPartitionAgg) {
-                  // TODO: can be improved with a set or timestamps
-                  var isExist = false
-                  partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).locations.
-                    foreach {
-                      x: RdmaPartitionLocation =>
-                        if (x.rdmaShuffleManagerId == r.rdmaShuffleManagerId &&
-                          x.rdmaBlockLocation.address == r.rdmaBlockLocation.address) {
-                          if (x.rdmaBlockLocation.length < r.rdmaBlockLocation.length) {
-                            x.rdmaBlockLocation = r.rdmaBlockLocation
-                          }
-                          isExist = true
-                        }
-                    }
-                    if (!isExist) {
-                      partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).
-                        locations += r
-                    }
-                } else {
-                  partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).locations += r
-                }
+                partitionLocationsMap.get(publishMsg.shuffleId).get(r.partitionId).locations += r
               }
           }
 
@@ -314,13 +292,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     partitionLocationsMap.putIfAbsent(baseShuffleHandle.shuffleId,
       new ConcurrentHashMap[Int, PartitionLocation]())
 
-    rdmaShuffleConf.shuffleWriterMethod match {
-      case ShuffleWriterMethod.Wrapper =>
-        new RdmaWrapperShuffleWriter(shuffleBlockResolver, baseShuffleHandle, mapId, context)
-      case ShuffleWriterMethod.ChunkedPartitionAgg =>
-        new RdmaChunkedPartitionAggShuffleWriter(shuffleBlockResolver, baseShuffleHandle,
-          mapId, context)
-    }
+    new RdmaWrapperShuffleWriter(shuffleBlockResolver, baseShuffleHandle, mapId, context)
   }
 
   override def unregisterShuffle(shuffleId: Int): Boolean = {
