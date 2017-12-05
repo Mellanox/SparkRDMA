@@ -168,7 +168,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
     assume(isDriver)
     if (localRdmaShuffleManagerId.isEmpty) {
-      localRdmaShuffleManagerId = Some(new RdmaShuffleManagerId(
+      localRdmaShuffleManagerId = Some(RdmaShuffleManagerId(
         rdmaNode.get.getLocalInetSocketAddress.getHostString,
         rdmaNode.get.getLocalInetSocketAddress.getPort,
         SparkEnv.get.blockManager.blockManagerId))
@@ -226,7 +226,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
         shouldSendHelloMsg = true
         rdmaNode = Some(new RdmaNode(SparkEnv.get.blockManager.blockManagerId.host, !isDriver,
           rdmaShuffleConf, receiveListener))
-        localRdmaShuffleManagerId = Some(new RdmaShuffleManagerId(
+        localRdmaShuffleManagerId = Some(RdmaShuffleManagerId(
           rdmaNode.get.getLocalInetSocketAddress.getHostString,
           rdmaNode.get.getLocalInetSocketAddress.getPort,
           SparkEnv.get.blockManager.blockManagerId))
