@@ -22,7 +22,9 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.ibm.disni.rdma.verbs.IbvMr;
 import com.ibm.disni.rdma.verbs.IbvPd;
+import com.ibm.disni.rdma.verbs.SVCRegMr;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,10 +77,20 @@ public class RdmaBufferManager {
   private final int minimumAllocationSize;
   private final ConcurrentHashMap<Integer, AllocatorStack> stack_map = new ConcurrentHashMap<>();
   private IbvPd pd = null;
+  private IbvMr odpMr = null;
 
   RdmaBufferManager(IbvPd pd, boolean isExecutor, RdmaShuffleConf conf) throws IOException {
     this.pd = pd;
     this.minimumAllocationSize = Math.min(conf.recvWrSize(), MIN_BLOCK_SIZE);
+
+    if (conf.useOdp(pd.getContext())) {
+      int access = IbvMr.IBV_ACCESS_LOCAL_WRITE | IbvMr.IBV_ACCESS_REMOTE_WRITE |
+        IbvMr.IBV_ACCESS_REMOTE_READ | IbvMr.IBV_ACCESS_ON_DEMAND;
+
+      SVCRegMr sMr = pd.regMr(0, -1, access).execute();
+      this.odpMr = sMr.getMr();
+      sMr.free();
+    }
 
     long aggBlockPrealloc = conf.maxAggPrealloc() / conf.maxAggBlock();
     if (aggBlockPrealloc > 0 && isExecutor) {
@@ -127,7 +139,9 @@ public class RdmaBufferManager {
 
   IbvPd getPd() { return this.pd; }
 
-  void stop() {
+  IbvMr getOdpMr() { return this.odpMr; }
+
+  void stop() throws IOException {
     logger.info("Rdma buffers allocation statistics:");
     for (Integer size : stack_map.keySet()) {
       AllocatorStack allocatorStack = stack_map.remove(size);
@@ -136,6 +150,10 @@ public class RdmaBufferManager {
           (size /1024) + " KB");
         allocatorStack.close();
       }
+    }
+
+    if (odpMr != null) {
+      odpMr.deregMr().execute().free();
     }
   }
 }

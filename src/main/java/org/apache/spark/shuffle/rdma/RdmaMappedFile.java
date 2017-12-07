@@ -40,6 +40,7 @@ public class RdmaMappedFile {
   private FileChannel fileChannel = null;
 
   private final IbvPd ibvPd;
+  private IbvMr odpMr = null;
 
   private final RdmaMapTaskOutput rdmaMapTaskOutput;
   public RdmaMapTaskOutput getRdmaMapTaskOutput() { return rdmaMapTaskOutput; }
@@ -77,6 +78,7 @@ public class RdmaMappedFile {
       IllegalAccessException {
     this.file = file;
     this.ibvPd = rdmaBufferManager.getPd();
+    this.odpMr = rdmaBufferManager.getOdpMr();
 
     final RandomAccessFile backingFile = new RandomAccessFile(file, "rw");
     this.fileChannel = backingFile.getChannel();
@@ -133,7 +135,7 @@ public class RdmaMappedFile {
             curPartition,
             rdmaFileMapping.address + curLength - partitionLengths[curPartition],
             (int)partitionLengths[curPartition],
-            rdmaFileMapping.ibvMr.getLkey());
+            (rdmaFileMapping.ibvMr != null) ? rdmaFileMapping.ibvMr.getLkey() : odpMr.getLkey());
           curPartition++;
         }
       }
@@ -153,16 +155,26 @@ public class RdmaMappedFile {
         "supported");
     }
 
-    SVCRegMr svcRegMr = ibvPd.regMr(address, (int)length, ACCESS).execute();
-    IbvMr ibvMr = svcRegMr.getMr();
-    svcRegMr.free();
+    IbvMr ibvMr = null;
+    if (odpMr == null) {
+      SVCRegMr svcRegMr = ibvPd.regMr(address, (int)length, ACCESS).execute();
+      ibvMr = svcRegMr.getMr();
+      svcRegMr.free();
+    } else {
+      int ret = odpMr.expPrefetchMr(address, (int)length);
+      if (ret != 0) {
+        throw new IOException("expPrefetchMr failed with: " + ret);
+      }
+    }
 
     rdmaFileMappings.add(new RdmaFileMapping(ibvMr, address, mapAddress, length, alignedLength));
   }
 
   private void unregisterAndUnmap(RdmaFileMapping rdmaFileMapping) throws InvocationTargetException,
       IllegalAccessException, IOException {
-    rdmaFileMapping.ibvMr.deregMr().execute().free();
+    if (rdmaFileMapping.ibvMr != null) {
+      rdmaFileMapping.ibvMr.deregMr().execute().free();
+    }
     unmmap.invoke(null, rdmaFileMapping.mapAddress, rdmaFileMapping.alignedLength);
   }
 

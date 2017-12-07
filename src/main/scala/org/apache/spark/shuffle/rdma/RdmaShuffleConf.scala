@@ -17,8 +17,11 @@
 
 package org.apache.spark.shuffle.rdma
 
-import org.apache.spark.{SparkConf, SPARK_VERSION}
+import com.ibm.disni.rdma.verbs.IbvContext
+import org.apache.spark.internal.Logging
+import org.apache.spark.{SPARK_VERSION, SparkConf}
 import org.apache.spark.util.Utils
+
 
 object SparkVersionSupport {
   private val versionRegex = """^(\d+)\.(\d+)(\..*)?$""".r
@@ -36,7 +39,8 @@ object SparkVersionSupport {
   }
 }
 
-class RdmaShuffleConf(conf: SparkConf) {
+class RdmaShuffleConf(conf: SparkConf) extends Logging{
+
   private def getRdmaConfIntInRange(name: String, defaultValue: Int, min: Int, max: Int) = {
     conf.getInt(toRdmaConfKey(name), defaultValue)  match {
       case i if (min to max).contains(i) => i
@@ -67,6 +71,22 @@ class RdmaShuffleConf(conf: SparkConf) {
   lazy val recvWrSize: Int = getRdmaConfSizeAsBytesInRange("recvWrSize", "4k", "2k", "1m").toInt
   lazy val swFlowControl: Boolean = conf.getBoolean(toRdmaConfKey("swFlowControl"), true)
 
+  def useOdp(context: IbvContext): Boolean = {
+    conf.getBoolean(toRdmaConfKey("useOdp"), true) && {
+      val rcOdpCaps = context.queryOdpSupport()
+      val ret = (rcOdpCaps != -1) &&
+        ((rcOdpCaps & IbvContext.IBV_ODP_SUPPORT_WRITE) != 0) &&
+        ((rcOdpCaps & IbvContext.IBV_ODP_SUPPORT_READ) != 0)
+      if (!ret){
+        logWarning("ODP (On Demand Paging) is not supported for this device. " +
+          "Please refer to the SparkRDMA wiki for more information: " +
+          "https://github.com/Mellanox/SparkRDMA/wiki/Configuration-Properties")
+      } else {
+        logInfo("Using ODP (On Demand Paging) memory prefetch")
+      }
+      ret
+    }
+  }
   //
   // CPU Affinity Settings
   //
