@@ -27,7 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class RdmaBufferManager {
-
   private class AllocatorStack {
     private final AtomicInteger totalAlloc = new AtomicInteger(0);
     private final ConcurrentLinkedDeque<RdmaBuffer> stack = new ConcurrentLinkedDeque<>();
@@ -126,7 +125,7 @@ public class RdmaBufferManager {
     }
   }
 
-  public IbvPd getPd() { return this.pd; }
+  IbvPd getPd() { return this.pd; }
 
   void stop() {
     logger.info("Rdma buffers allocation statistics:");

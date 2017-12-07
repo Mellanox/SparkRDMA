@@ -65,8 +65,9 @@ class RdmaWrapperShuffleData(
         throw new IOException("fail to rename file " + dataTmp + " to " + dataFile)
       }
 
-      val rdmaFile = new RdmaMappedFile(dataFile, rdmaShuffleManager.getIbvPd,
-        rdmaShuffleManager.rdmaShuffleConf.shuffleWriteBlockSize.toInt, lengths)
+      val rdmaFile = new RdmaMappedFile(dataFile,
+        rdmaShuffleManager.rdmaShuffleConf.shuffleWriteBlockSize.toInt, lengths,
+        rdmaShuffleManager.getRdmaBufferManager)
 
       // Overwrite and dispose of older file if already exists
       rdmaMappedFileByMapId.put(mapId, rdmaFile).foreach(_.dispose())

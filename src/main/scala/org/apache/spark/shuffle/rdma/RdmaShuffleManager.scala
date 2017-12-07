@@ -22,7 +22,6 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-import com.ibm.disni.rdma.verbs.IbvPd
 import scala.collection.JavaConverters._
 import scala.collection.concurrent
 import scala.concurrent.Future
@@ -366,15 +365,13 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   def getRdmaChannelToDriver(mustRetry: Boolean): RdmaChannel = getRdmaChannel(
     rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort, mustRetry)
 
+  def getRdmaBufferManager: RdmaBufferManager = rdmaNode.get.getRdmaBufferManager
+
   def getRdmaByteBufferManagedBuffer(length : Int): RdmaByteBufferManagedBuffer =
-    new RdmaByteBufferManagedBuffer(new RdmaRegisteredBuffer(rdmaNode.get.getRdmaBufferManager,
-      length), length)
+    new RdmaByteBufferManagedBuffer(new RdmaRegisteredBuffer(getRdmaBufferManager, length), length)
 
   def getRdmaRegisteredBuffer(length : Int): RdmaRegisteredBuffer = new RdmaRegisteredBuffer(
-    rdmaNode.get.getRdmaBufferManager, length)
-
-  // TODO: Clean this disni dependency out?
-  def getIbvPd: IbvPd = rdmaNode.get.getRdmaBufferManager.getPd
+    getRdmaBufferManager, length)
 
   def getLocalRdmaShuffleManagerId: RdmaShuffleManagerId = localRdmaShuffleManagerId.get
 

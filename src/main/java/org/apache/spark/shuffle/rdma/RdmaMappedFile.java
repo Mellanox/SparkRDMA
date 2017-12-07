@@ -72,10 +72,11 @@ public class RdmaMappedFile {
     }
   }
 
-  public RdmaMappedFile(File file, IbvPd ibvPd, int chunkSize, long[] partitionLengths)
-      throws IOException, InvocationTargetException, IllegalAccessException {
+  public RdmaMappedFile(File file, int chunkSize, long[] partitionLengths,
+      RdmaBufferManager rdmaBufferManager) throws IOException, InvocationTargetException,
+      IllegalAccessException {
     this.file = file;
-    this.ibvPd = ibvPd;
+    this.ibvPd = rdmaBufferManager.getPd();
 
     final RandomAccessFile backingFile = new RandomAccessFile(file, "rw");
     this.fileChannel = backingFile.getChannel();
