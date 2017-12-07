@@ -23,16 +23,14 @@ import sun.misc.Unsafe;
 import com.ibm.disni.rdma.verbs.IbvPd;
 import com.ibm.disni.rdma.verbs.SVCRegMr;
 import com.ibm.disni.rdma.verbs.IbvMr;
-import sun.nio.ch.DirectBuffer;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 
-public class RdmaBuffer {
+class RdmaBuffer {
   private static final Logger logger = LoggerFactory.getLogger(RdmaBuffer.class);
-  private static final int BYTE_ARRAY_OFFSET;
 
   private IbvMr ibvMr = null;
   private final long address;
@@ -48,32 +46,25 @@ public class RdmaBuffer {
       logger.error("Failed to retrieve the Unsafe");
       throw new RuntimeException(e);
     }
-
-    BYTE_ARRAY_OFFSET = unsafe.arrayBaseOffset(byte[].class);
   }
 
-  public RdmaBuffer(IbvPd ibvPd, int length) throws IOException {
+  RdmaBuffer(IbvPd ibvPd, int length) throws IOException {
     address = unsafe.allocateMemory((long)length);
     this.length = length;
     register(ibvPd);
   }
 
-  public RdmaBuffer(int length) {
-    address = unsafe.allocateMemory((long)length);
-    this.length = length;
-  }
-
-  public long getAddress() {
+  long getAddress() {
     return address;
   }
-  public int getLength() {
+  int getLength() {
     return length;
   }
-  public int getLkey() {
+  int getLkey() {
     return ibvMr.getLkey();
   }
 
-  public void free() {
+  void free() {
     unregister();
     unsafe.freeMemory(address);
   }
@@ -98,20 +89,7 @@ public class RdmaBuffer {
     }
   }
 
-  public void write(DirectBuffer buf, long srcOffset, long dstOffset, long length) {
-    unsafe.copyMemory(buf.address() + srcOffset, getAddress() + dstOffset, length);
-  }
-
-  public void write(byte[] bytes, long srcOffset, long dstOffset, long length) {
-    unsafe.copyMemory(
-      bytes,
-      BYTE_ARRAY_OFFSET + srcOffset,
-      null,
-      getAddress() + dstOffset,
-      length);
-  }
-
-  public ByteBuffer getByteBuffer() throws IOException {
+  ByteBuffer getByteBuffer() throws IOException {
     Class<?> classDirectByteBuffer;
     try {
       classDirectByteBuffer = Class.forName("java.nio.DirectByteBuffer");
