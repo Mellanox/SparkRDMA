@@ -29,8 +29,8 @@ import org.apache.spark.storage.BlockManagerId
 
 object RdmaRpcMsgType extends Enumeration {
   type RdmaRpcMsgType = Value
-  val PublishPartitionLocations, FetchPartitionLocations, RdmaShuffleManagerHello,
-    AnnounceRdmaShuffleManagers = Value
+  val RdmaShuffleManagerHello, AnnounceRdmaShuffleManagers, PublishMapTaskOutput, FetchMapStatus,
+    FetchMapStatusResponse = Value
 }
 
 trait RdmaRpcMsg {
@@ -40,10 +40,6 @@ trait RdmaRpcMsg {
   protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit
 
   private final val overhead: Int = 4 + 4 // 4 + 4 for msg length and type
-  // TODO: split to driver to executor - only has a single partitionIs and ShuffleId, we can also
-  // aggregate per executor, we can define aggregators for RdmaPartitionLocation
-  // TODO: executor to driver also has only a single partitionId and shuffle id and all of the host
-  // and ports are the same
 
   def toRdmaByteBufferManagedBuffers(allocator: Int => RdmaByteBufferManagedBuffer,
       maxSegmentSize: Int): Array[RdmaByteBufferManagedBuffer] = {
@@ -73,144 +69,20 @@ object RdmaRpcMsg extends Logging {
     buf.limit(msgLength)
 
     RdmaRpcMsgType(in.readInt()) match {
-      case RdmaRpcMsgType.PublishPartitionLocations =>
-        RdmaPublishPartitionLocationsRpcMsg(in)
-      case RdmaRpcMsgType.FetchPartitionLocations =>
-        RdmaFetchPartitionLocationsRpcMsg(in)
       case RdmaRpcMsgType.RdmaShuffleManagerHello =>
         RdmaShuffleManagerHelloRpcMsg(in)
       case RdmaRpcMsgType.AnnounceRdmaShuffleManagers =>
         RdmaAnnounceRdmaShuffleManagersRpcMsg(in)
+      case RdmaRpcMsgType.PublishMapTaskOutput =>
+        RdmaPublishMapTaskOutputRpcMsg(in)
+      case RdmaRpcMsgType.FetchMapStatus =>
+        RdmaFetchMapStatusRpcMsg(in)
+      case RdmaRpcMsgType.FetchMapStatusResponse =>
+        RdmaFetchMapStatusResponseRpcMsg(in)
       case _ =>
         logger.warn("Received an unidentified RPC")
         null
     }
-  }
-}
-
-class RdmaPublishPartitionLocationsRpcMsg(
-    var shuffleId: Int,
-    var partitionId: Int,
-    var rdmaPartitionLocations: Seq[RdmaPartitionLocation])
-  extends RdmaRpcMsg {
-  // 1 for isLast bool per segment, + 4 for shuffleId + 4 for partitionId
-  private final val overhead: Int = 1 + 4 + 4
-  var isLast = false
-
-  private def this() = this(0, -1, null)  // For deserialization only
-
-  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.PublishPartitionLocations
-
-  override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
-    var segmentSizes = new ArrayBuffer[Int]
-    segmentSizes += overhead
-    for (rdmaPartitionLocation <- rdmaPartitionLocations) {
-      val serializedLength = rdmaPartitionLocation.serializedLength
-      if (segmentSizes.last + serializedLength <= segmentSize) {
-        segmentSizes.update(segmentSizes.length - 1, segmentSizes.last + serializedLength)
-      } else {
-        segmentSizes += (overhead + serializedLength)
-      }
-    }
-
-    segmentSizes.toArray
-  }
-
-  override protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit = {
-    var curOut: (DataOutputStream, Int) = null
-    var curSegmentLength = 0
-
-    def nextOut() {
-      curOut = outs.next()
-      curOut._1.writeBoolean(!outs.hasNext)
-      curOut._1.writeInt(shuffleId)
-      curOut._1.writeInt(partitionId)
-      curSegmentLength = overhead
-    }
-
-    nextOut()
-    for (rdmaPartitionLocation <- rdmaPartitionLocations) {
-      val serializedLength = rdmaPartitionLocation.serializedLength
-      if (curSegmentLength + serializedLength > curOut._2) {
-        nextOut()
-      }
-      curSegmentLength += serializedLength
-      rdmaPartitionLocation.write(curOut._1)
-    }
-  }
-
-  override protected def read(in: DataInputStream): Unit = {
-    isLast = in.readBoolean()
-    shuffleId = in.readInt()
-    partitionId = in.readInt()
-
-    val tmpRdmaPartitionLocations = new ArrayBuffer[RdmaPartitionLocation]
-    scala.util.control.Exception.ignoring(classOf[EOFException]) {
-      while (true) tmpRdmaPartitionLocations += RdmaPartitionLocation(in)
-    }
-    rdmaPartitionLocations = tmpRdmaPartitionLocations
-  }
-}
-
-object RdmaPublishPartitionLocationsRpcMsg {
-  def apply(in: DataInputStream): RdmaRpcMsg = {
-    val obj = new RdmaPublishPartitionLocationsRpcMsg()
-    obj.read(in)
-    obj
-  }
-}
-
-class RdmaFetchPartitionLocationsRpcMsg(
-    var host: String,
-    var port: Int,
-    var shuffleId: Int,
-    var partitionId: Int)
-  extends RdmaRpcMsg {
-
-  private def this() = this(null, 0, 0, 0)  // For deserialization only
-
-  private var hostnameInUtf: Array[Byte] = _
-
-  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.FetchPartitionLocations
-
-  override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
-    if (hostnameInUtf == null) {
-      hostnameInUtf = host.getBytes(Charset.forName("UTF-8"))
-    }
-    val serializedLength = 2 + hostnameInUtf.length + 4 + 4 + 4
-    require(serializedLength <= segmentSize, "RdmaBuffer RPC segment size is too small")
-
-    Array.fill(1) { serializedLength }
-  }
-
-  override protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit = {
-    val out = outs.next()._1
-    if (hostnameInUtf == null) {
-      hostnameInUtf = host.getBytes(Charset.forName("UTF-8"))
-    }
-    out.writeShort(hostnameInUtf.length)
-    out.write(hostnameInUtf)
-    out.writeInt(port)
-    out.writeInt(shuffleId)
-    out.writeInt(partitionId)
-  }
-
-  override protected def read(in: DataInputStream): Unit = {
-    val hostLength = in.readShort()
-    hostnameInUtf = new Array[Byte](hostLength)
-    in.read(hostnameInUtf, 0, hostLength)
-    host = new String(hostnameInUtf, "UTF-8")
-    port = in.readInt()
-    shuffleId = in.readInt()
-    partitionId = in.readInt()
-  }
-}
-
-object RdmaFetchPartitionLocationsRpcMsg {
-  def apply(in: DataInputStream): RdmaRpcMsg = {
-    val obj = new RdmaFetchPartitionLocationsRpcMsg()
-    obj.read(in)
-    obj
   }
 }
 
@@ -301,6 +173,272 @@ class RdmaAnnounceRdmaShuffleManagersRpcMsg(var rdmaShuffleManagerIds: Seq[RdmaS
 object RdmaAnnounceRdmaShuffleManagersRpcMsg {
   def apply(in: DataInputStream): RdmaRpcMsg = {
     val obj = new RdmaAnnounceRdmaShuffleManagersRpcMsg()
+    obj.read(in)
+    obj
+  }
+}
+
+class RdmaPublishMapTaskOutputRpcMsg(
+    var blockManagerId: BlockManagerId,
+    var shuffleId: Int,
+    var mapId: Int,
+    var totalNumPartitions: Int,
+    var firstReduceId: Int,
+    var lastReduceId: Int,
+    var rdmaMapTaskOutput: RdmaMapTaskOutput) extends RdmaRpcMsg {
+  import RdmaMapTaskOutput.ENTRY_SIZE
+  private var serializableBlockManagerId = if (blockManagerId != null) {
+    new SerializableBlockManagerId(blockManagerId)
+  } else {
+    null
+  }
+
+  // 4 bytes each for shuffleId, mapId, totalNumPartitions, startReduceId, lastReduceId
+  private def overhead: Int = serializableBlockManagerId.serializedLength + 4 + 4 + 4 + 4 + 4
+
+  private def this() = this(null, 0, -1, 0, 0, 0, null)  // For deserialization only
+
+  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.PublishMapTaskOutput
+
+  override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
+    var segmentSizes = new ArrayBuffer[Int]
+    segmentSizes += overhead
+
+    var remainingPartitions = rdmaMapTaskOutput.getNumPartitions
+    while (remainingPartitions > 0) {
+      val numLeft = if ((segmentSize - segmentSizes.last) / ENTRY_SIZE > 0) {
+        (segmentSize - segmentSizes.last) / ENTRY_SIZE
+      } else {
+        segmentSizes += overhead
+        (segmentSize - segmentSizes.last) / ENTRY_SIZE
+      }
+
+      segmentSizes.update(segmentSizes.length - 1,
+        segmentSizes.last + Math.min(remainingPartitions, numLeft) * ENTRY_SIZE)
+      remainingPartitions -= Math.min(remainingPartitions, numLeft)
+    }
+
+    segmentSizes.toArray
+  }
+
+  override protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit = {
+    var curOut: (DataOutputStream, Int) = null
+    var curSegmentLength = 0
+    var curStartReduceId = firstReduceId
+    var curLastReduceId = 0
+
+    def nextOut() {
+      curOut = outs.next()
+      serializableBlockManagerId.write(curOut._1)
+      curOut._1.writeInt(shuffleId)
+      curOut._1.writeInt(mapId)
+      curOut._1.writeInt(totalNumPartitions)
+      curOut._1.writeInt(curStartReduceId)
+      curSegmentLength = overhead
+
+      curLastReduceId = curStartReduceId + ((curOut._2 - curSegmentLength) / ENTRY_SIZE) - 1
+      require(curLastReduceId <= lastReduceId)
+      curOut._1.writeInt(curLastReduceId)
+    }
+
+    while (curStartReduceId < rdmaMapTaskOutput.getNumPartitions) {
+      nextOut()
+      val byteBuffer = rdmaMapTaskOutput.getByteBuffer(curStartReduceId, curLastReduceId)
+      curOut._1.write(byteBuffer.array(), byteBuffer.arrayOffset() + byteBuffer.position(),
+        byteBuffer.remaining())
+      curStartReduceId = curLastReduceId + 1
+    }
+  }
+
+  override protected def read(in: DataInputStream): Unit = {
+    serializableBlockManagerId = SerializableBlockManagerId(in)
+    blockManagerId = serializableBlockManagerId.toBlockManagerId
+    shuffleId = in.readInt()
+    mapId = in.readInt()
+    totalNumPartitions = in.readInt()
+    firstReduceId = in.readInt()
+    lastReduceId = in.readInt()
+
+    rdmaMapTaskOutput = new RdmaMapTaskOutput(firstReduceId, lastReduceId)
+    for (reduceId <- firstReduceId to lastReduceId) {
+      rdmaMapTaskOutput.put(reduceId, in.readLong(), in.readInt(), in.readInt())
+    }
+  }
+}
+
+object RdmaPublishMapTaskOutputRpcMsg {
+  def apply(in: DataInputStream): RdmaRpcMsg = {
+    val obj = new RdmaPublishMapTaskOutputRpcMsg()
+    obj.read(in)
+    obj
+  }
+}
+
+// TODO: cut down size for repeating reduceids - will usually be the same
+class RdmaFetchMapStatusRpcMsg(
+    var requestingRdmaShuffleManagerId: RdmaShuffleManagerId,
+    var requestedBlockManagerId: BlockManagerId,
+    var shuffleId: Int,
+    var callbackId: Int,
+    var mapIdReduceIds: Seq[(Int, Int)]) extends RdmaRpcMsg {
+  private var serializableBlockManagerId = if (requestedBlockManagerId != null) {
+    new SerializableBlockManagerId(requestedBlockManagerId)
+  } else {
+    null
+  }
+
+  // 4 for shuffleId, 4 for callbackId
+  private def overhead: Int = requestingRdmaShuffleManagerId.serializedLength +
+    serializableBlockManagerId.serializedLength + 4 + 4
+
+  private val ENTRY_SIZE: Int = 8
+
+  private def this() = this(null, null, -1, -1, null)  // For deserialization only
+
+  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.FetchMapStatus
+
+  override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
+    val segmentSizes = new ArrayBuffer[Int]
+    segmentSizes += overhead
+
+    var curMapIdReduceIdsLength = mapIdReduceIds.length
+    while (curMapIdReduceIdsLength > 0) {
+      val numLeft = if ((segmentSize - segmentSizes.last) / ENTRY_SIZE > 0) {
+        (segmentSize - segmentSizes.last) / ENTRY_SIZE
+      } else {
+        segmentSizes += overhead
+        (segmentSize - segmentSizes.last) / ENTRY_SIZE
+      }
+
+      segmentSizes.update(segmentSizes.length - 1,
+        segmentSizes.last + Math.min(curMapIdReduceIdsLength, numLeft) * ENTRY_SIZE)
+      curMapIdReduceIdsLength -= Math.min(curMapIdReduceIdsLength, numLeft)
+    }
+
+    segmentSizes.toArray
+  }
+
+  override protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit = {
+    var curOut: (DataOutputStream, Int) = null
+    var curSegmentLength = 0
+
+    def nextOut() {
+      curOut = outs.next()
+      requestingRdmaShuffleManagerId.write(curOut._1)
+      serializableBlockManagerId.write(curOut._1)
+      curOut._1.writeInt(shuffleId)
+      curOut._1.writeInt(callbackId)
+      curSegmentLength = overhead
+    }
+
+    nextOut()
+    for ((mapId, reduceId) <- mapIdReduceIds) {
+      if (curSegmentLength + ENTRY_SIZE > curOut._2) {
+        nextOut()
+      }
+      curSegmentLength += ENTRY_SIZE
+      curOut._1.writeInt(mapId)
+      curOut._1.writeInt(reduceId)
+    }
+  }
+
+  override protected def read(in: DataInputStream): Unit = {
+    requestingRdmaShuffleManagerId = RdmaShuffleManagerId(in)
+    serializableBlockManagerId = SerializableBlockManagerId(in)
+    requestedBlockManagerId = serializableBlockManagerId.toBlockManagerId
+    shuffleId = in.readInt()
+    callbackId = in.readInt()
+
+    val tmpMapIdReduceIds = new ArrayBuffer[(Int, Int)]
+    scala.util.control.Exception.ignoring(classOf[EOFException]) {
+      while (true) tmpMapIdReduceIds += ((in.readInt(), in.readInt()))
+    }
+    mapIdReduceIds = tmpMapIdReduceIds
+  }
+}
+
+object RdmaFetchMapStatusRpcMsg {
+  def apply(in: DataInputStream): RdmaRpcMsg = {
+    val obj = new RdmaFetchMapStatusRpcMsg()
+    obj.read(in)
+    obj
+  }
+}
+
+class RdmaFetchMapStatusResponseRpcMsg(
+    var callbackId: Int,
+    var requestedRdmaShuffleManagerId: RdmaShuffleManagerId,
+    var rdmaBlockLocations: Seq[RdmaBlockLocation]) extends RdmaRpcMsg {
+  // 4 for callbackId
+  private def overhead: Int = 4 + requestedRdmaShuffleManagerId.serializedLength
+
+  private val ENTRY_SIZE: Int = 16
+
+  private def this() = this(-1, null, null)  // For deserialization only
+
+  override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.FetchMapStatusResponse
+
+  override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
+    var segmentSizes = new ArrayBuffer[Int]
+    segmentSizes += overhead
+
+    var curRdmaBlockLocationsLength = rdmaBlockLocations.length
+    while (curRdmaBlockLocationsLength > 0) {
+      val numLeft = if ((segmentSize - segmentSizes.last) / ENTRY_SIZE > 0) {
+        (segmentSize - segmentSizes.last) / ENTRY_SIZE
+      } else {
+        segmentSizes += overhead
+        (segmentSize - segmentSizes.last) / ENTRY_SIZE
+      }
+
+      segmentSizes.update(segmentSizes.length - 1,
+        segmentSizes.last + Math.min(curRdmaBlockLocationsLength, numLeft) * ENTRY_SIZE)
+      curRdmaBlockLocationsLength -= Math.min(curRdmaBlockLocationsLength, numLeft)
+    }
+
+    segmentSizes.toArray
+  }
+
+  override protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit = {
+    var curOut: (DataOutputStream, Int) = null
+    var curSegmentLength = 0
+
+    def nextOut() {
+      curOut = outs.next()
+      curOut._1.writeInt(callbackId)
+      requestedRdmaShuffleManagerId.write(curOut._1)
+      curSegmentLength = overhead
+    }
+
+    nextOut()
+    for (rdmaBlockLocation <- rdmaBlockLocations) {
+      if (curSegmentLength + ENTRY_SIZE > curOut._2) {
+        nextOut()
+      }
+      curSegmentLength += ENTRY_SIZE
+      curOut._1.writeLong(rdmaBlockLocation.address)
+      curOut._1.writeInt(rdmaBlockLocation.length)
+      curOut._1.writeInt(rdmaBlockLocation.mKey)
+    }
+  }
+
+  override protected def read(in: DataInputStream): Unit = {
+    callbackId = in.readInt()
+    requestedRdmaShuffleManagerId = RdmaShuffleManagerId(in)
+
+    val tmpRdmaBlockLocations = new ArrayBuffer[RdmaBlockLocation]
+    scala.util.control.Exception.ignoring(classOf[EOFException]) {
+      while (true) {
+        tmpRdmaBlockLocations += RdmaBlockLocation(in.readLong(), in.readInt(), in.readInt())
+      }
+    }
+    rdmaBlockLocations = tmpRdmaBlockLocations
+  }
+}
+
+object RdmaFetchMapStatusResponseRpcMsg {
+  def apply(in: DataInputStream): RdmaRpcMsg = {
+    val obj = new RdmaFetchMapStatusResponseRpcMsg()
     obj.read(in)
     obj
   }

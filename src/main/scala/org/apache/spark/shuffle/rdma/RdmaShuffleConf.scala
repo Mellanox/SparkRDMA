@@ -92,7 +92,7 @@ class RdmaShuffleConf(conf: SparkConf) {
     toRdmaConfKey("collectShuffleReaderStats"),
     defaultValue = false)
   lazy val partitionLocationFetchTimeout: Int = getRdmaConfIntInRange(
-    "partitionLocationFetchTimeout", 30000, 1000, Integer.MAX_VALUE)
+    "partitionLocationFetchTimeout", 120000, 1000, Integer.MAX_VALUE)
   lazy val fetchTimeBucketSizeInMs: Int = getRdmaConfIntInRange("fetchTimeBucketSizeInMs", 300, 5,
     60000)
   lazy val fetchTimeNumBuckets: Int = getRdmaConfIntInRange("fetchTimeNumBuckets", 5, 2, 100)

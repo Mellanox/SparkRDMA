@@ -22,6 +22,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.JavaConverters._
+
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
@@ -29,29 +30,28 @@ import org.apache.spark.shuffle.{BaseShuffleHandle, IndexShuffleBlockResolver, S
 import org.apache.spark.shuffle.rdma._
 import org.apache.spark.shuffle.rdma.writer.RdmaShuffleData
 import org.apache.spark.shuffle.sort._
+import org.apache.spark.shuffle.rdma.RdmaCompletionListener
 
 class RdmaWrapperShuffleData(
-  shuffleId: Int,
-  numPartitions: Int,
-  rdmaShuffleManager: RdmaShuffleManager) extends RdmaShuffleData {
-
-  private val rdmaMappedFileByMapId = new ConcurrentHashMap[Int, RdmaMappedFile]
+    shuffleId: Int,
+    numPartitions: Int,
+    rdmaShuffleManager: RdmaShuffleManager) extends RdmaShuffleData {
+  private val rdmaMappedFileByMapId = new ConcurrentHashMap[Int, RdmaMappedFile].asScala
 
   override def getInputStreams(partitionId: Int): Seq[InputStream] = {
-    rdmaMappedFileByMapId.asScala.map(
+    rdmaMappedFileByMapId.map(
       _._2.getByteBufferForPartition(partitionId)).filter(_ != null)
       .map(new ByteBufferBackedInputStream(_)).toSeq
   }
 
-  override def dispose(): Unit = { rdmaMappedFileByMapId.asScala.foreach(_._2.dispose()) }
+  override def dispose(): Unit = rdmaMappedFileByMapId.foreach(_._2.dispose())
 
   override def newShuffleWriter(): Unit = {}
 
-  def getRdmaMappedFileForMapId(mapId: Int): RdmaMappedFile = rdmaMappedFileByMapId.get(mapId)
+  def getRdmaMappedFileForMapId(mapId: Int): RdmaMappedFile = rdmaMappedFileByMapId(mapId)
 
   override def removeDataByMap(mapId: Int): Unit = {
-    val file = rdmaMappedFileByMapId.remove(mapId)
-    if (file != null) { file.dispose() }
+    rdmaMappedFileByMapId.remove(mapId).foreach(_.dispose())
   }
 
   override def writeIndexFileAndCommit(mapId: Int, lengths: Array[Long], dataTmp: File): Unit = {
@@ -64,13 +64,13 @@ class RdmaWrapperShuffleData(
       if (dataTmp != null && dataTmp.exists() && !dataTmp.renameTo(dataFile)) {
         throw new IOException("fail to rename file " + dataTmp + " to " + dataFile)
       }
+
+      val rdmaFile = new RdmaMappedFile(dataFile, rdmaShuffleManager.getIbvPd,
+        rdmaShuffleManager.rdmaShuffleConf.shuffleWriteBlockSize.toInt, lengths)
+
+      // Overwrite and dispose of older file if already exists
+      rdmaMappedFileByMapId.put(mapId, rdmaFile).foreach(_.dispose())
     }
-
-    val rdmaFile = new RdmaMappedFile(dataFile, rdmaShuffleManager.getIbvPd,
-      rdmaShuffleManager.rdmaShuffleConf.shuffleWriteBlockSize.toInt, lengths)
-
-    val oldFile = rdmaMappedFileByMapId.put(mapId, rdmaFile)
-    if (oldFile != null) { oldFile.dispose() }
   }
 }
 
@@ -101,7 +101,7 @@ class RdmaWrapperShuffleWriter[K, V, C](
   }
   private var stopping = false
 
-  override def write(records: Iterator[Product2[K, V]]): Unit = { writer.write(records) }
+  override def write(records: Iterator[Product2[K, V]]): Unit = writer.write(records)
 
   override def stop(success: Boolean): Option[MapStatus] = {
     if (stopping) {
@@ -110,30 +110,43 @@ class RdmaWrapperShuffleWriter[K, V, C](
     stopping = true
 
     val optMapStatus = writer.stop(success)
+    val rdmaShuffleManager = env.shuffleManager.asInstanceOf[RdmaShuffleManager]
+    val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
 
     if (success) {
-      val rdmaShuffleManager = env.shuffleManager.asInstanceOf[RdmaShuffleManager]
-      val localRdmaShuffleManagerId = rdmaShuffleManager.getLocalRdmaShuffleManagerId
+      // Publish this map task's RdmaMapTaskOutput to the Driver
       val dep = handle.dependency
-      val rdmaMappedFile = rdmaShuffleBlockResolver.getRdmaShuffleData(dep.shuffleId).
-        asInstanceOf[RdmaWrapperShuffleData].getRdmaMappedFileForMapId(mapId)
+      val rdmaMapTaskOutput = rdmaShuffleBlockResolver.getRdmaShuffleData(dep.shuffleId).
+        asInstanceOf[RdmaWrapperShuffleData].getRdmaMappedFileForMapId(mapId).getRdmaMapTaskOutput
 
-      val rdmaPartitionLocations = {
-        for (partitionId <- 0 until dep.partitioner.numPartitions;
-          rdmaBlockLocation = rdmaMappedFile.getRdmaBlockLocationForPartition(partitionId)
-          if rdmaBlockLocation != null && rdmaBlockLocation.length > 0) yield {
-          new RdmaPartitionLocation(localRdmaShuffleManagerId, partitionId, rdmaBlockLocation)
+      val rdmaChannel = rdmaShuffleManager.getRdmaChannelToDriver(mustRetry = true)
+      val buffers = new RdmaPublishMapTaskOutputRpcMsg(
+        rdmaShuffleManager.getLocalRdmaShuffleManagerId.blockManagerId,
+        dep.shuffleId,
+        mapId,
+        dep.partitioner.numPartitions,
+        0,
+        dep.partitioner.numPartitions - 1,
+        rdmaMapTaskOutput).toRdmaByteBufferManagedBuffers(
+          rdmaShuffleManager.getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
+
+      val listener = new RdmaCompletionListener {
+        override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
+        override def onFailure(e: Throwable): Unit = {
+          buffers.foreach(_.release())
+          logError("Failed to send RdmaFetchMapStatusRpcMsg to " + rdmaChannel + ":" +
+            ", Exception: " + e)
         }
       }
 
-      // TODO: For increased safety, we can check if this is the latest when received in the driver
-      val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
-      rdmaShuffleManager.publishPartitionLocations(
-        rdmaShuffleConf.driverHost,
-        rdmaShuffleConf.driverPort,
-        dep.shuffleId,
-        -1,
-        rdmaPartitionLocations)
+      try {
+        rdmaChannel.rdmaSendInQueue(listener, buffers.map(_.getAddress), buffers.map(_.getLkey),
+          buffers.map(_.getLength.toInt))
+      } catch {
+        case e: Exception =>
+          listener.onFailure(e)
+          throw e
+      }
     }
 
     optMapStatus

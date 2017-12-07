@@ -20,7 +20,10 @@ package org.apache.spark.shuffle.rdma
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+
 import scala.collection.JavaConverters._
+
+import org.apache.spark.storage.BlockManagerId
 
 class RdmaRemoteFetchHistogram(numBuckets: Int, bucketSize: Int) {
   private val results = Array.fill(numBuckets + 1) { new AtomicInteger(0) }
@@ -48,16 +51,16 @@ class RdmaRemoteFetchHistogram(numBuckets: Int, bucketSize: Int) {
 class RdmaShuffleReaderStats(rdmaShuffleConf: RdmaShuffleConf) {
   private val logger = LoggerFactory.getLogger(classOf[RdmaShuffleReaderStats])
   private val remoteFetchHistogramMap =
-    new ConcurrentHashMap[RdmaShuffleManagerId, RdmaRemoteFetchHistogram]()
+    new ConcurrentHashMap[BlockManagerId, RdmaRemoteFetchHistogram]()
   private val globalHistogram = new RdmaRemoteFetchHistogram(rdmaShuffleConf.fetchTimeNumBuckets,
     rdmaShuffleConf.fetchTimeBucketSizeInMs)
 
-  def updateRemoteFetchHistogram(hostPort: RdmaShuffleManagerId, fetchTimeInMs: Int): Unit = {
-    var remoteFetchHistogram = remoteFetchHistogramMap.get(hostPort)
+  def updateRemoteFetchHistogram(blockManagerId: BlockManagerId, fetchTimeInMs: Int): Unit = {
+    var remoteFetchHistogram = remoteFetchHistogramMap.get(blockManagerId)
     if (remoteFetchHistogram == null) {
       remoteFetchHistogram = new RdmaRemoteFetchHistogram(rdmaShuffleConf.fetchTimeNumBuckets,
         rdmaShuffleConf.fetchTimeBucketSizeInMs)
-      val res = remoteFetchHistogramMap.putIfAbsent(hostPort, remoteFetchHistogram)
+      val res = remoteFetchHistogramMap.putIfAbsent(blockManagerId, remoteFetchHistogram)
       if (res != null) {
         remoteFetchHistogram = res
       }

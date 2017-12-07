@@ -25,39 +25,6 @@ import org.apache.spark.storage.BlockManagerId
 
 case class RdmaBlockLocation(var address: Long, var length: Int, var mKey: Int)
 
-class RdmaPartitionLocation(
-    var rdmaShuffleManagerId: RdmaShuffleManagerId,
-    var partitionId: Int,
-    var rdmaBlockLocation: RdmaBlockLocation) {
-  private def this() = this(null, 0, null)  // For deserialization only
-
-  def serializedLength: Int = {
-    rdmaShuffleManagerId.serializedLength + 4 + 8 + 4 + 4
-  }
-
-  def write(out: DataOutputStream) {
-    rdmaShuffleManagerId.write(out)
-    out.writeInt(partitionId)
-    out.writeLong(rdmaBlockLocation.address)
-    out.writeInt(rdmaBlockLocation.length)
-    out.writeInt(rdmaBlockLocation.mKey)
-  }
-
-  private def read(in: DataInputStream) {
-    rdmaShuffleManagerId = RdmaShuffleManagerId(in)
-    partitionId = in.readInt()
-    rdmaBlockLocation = RdmaBlockLocation(in.readLong(), in.readInt(), in.readInt())
-  }
-}
-
-object RdmaPartitionLocation {
-  def apply(in: DataInputStream): RdmaPartitionLocation = {
-    val obj = new RdmaPartitionLocation()
-    obj.read(in)
-    obj
-  }
-}
-
 class SerializableBlockManagerId private (executorId__ : String, host__ : String, port__ : Int) {
   private val blockManagerId = BlockManagerId(executorId__, host__, port__)
   private var executorIdInUtf: Array[Byte] = _
