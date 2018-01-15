@@ -17,16 +17,16 @@
 
 package org.apache.spark.shuffle.rdma;
 
+import org.apache.spark.unsafe.memory.MemoryBlock;
+import org.apache.spark.unsafe.memory.UnsafeMemoryAllocator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sun.misc.Unsafe;
 import com.ibm.disni.rdma.verbs.IbvPd;
 import com.ibm.disni.rdma.verbs.SVCRegMr;
 import com.ibm.disni.rdma.verbs.IbvMr;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 
 class RdmaBuffer {
@@ -35,21 +35,13 @@ class RdmaBuffer {
   private IbvMr ibvMr = null;
   private final long address;
   private final int length;
+  private final MemoryBlock block;
 
-  private static final Unsafe unsafe;
-  static {
-    try {
-      Field unsafeField = Unsafe.class.getDeclaredField("theUnsafe");
-      unsafeField.setAccessible(true);
-      unsafe = (Unsafe)unsafeField.get(null);
-    } catch (IllegalAccessException | NoSuchFieldException e) {
-      logger.error("Failed to retrieve the Unsafe");
-      throw new RuntimeException(e);
-    }
-  }
+  public static final UnsafeMemoryAllocator unsafeAlloc = new UnsafeMemoryAllocator();
 
   RdmaBuffer(IbvPd ibvPd, int length) throws IOException {
-    address = unsafe.allocateMemory((long)length);
+    block = unsafeAlloc.allocate((long)length);
+    address = block.getBaseOffset();
     this.length = length;
     register(ibvPd);
   }
@@ -66,7 +58,7 @@ class RdmaBuffer {
 
   void free() {
     unregister();
-    unsafe.freeMemory(address);
+    unsafeAlloc.free(block);
   }
 
   private void register(IbvPd ibvPd) throws IOException {

@@ -62,6 +62,8 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
   lazy val sendQueueDepth: Int = getRdmaConfIntInRange("sendQueueDepth", 4096, 256, 65535)
   lazy val recvWrSize: Int = getRdmaConfSizeAsBytesInRange("recvWrSize", "4k", "2k", "1m").toInt
   lazy val swFlowControl: Boolean = conf.getBoolean(toRdmaConfKey("swFlowControl"), true)
+  lazy val maxBufferAllocationSize: Long = getRdmaConfSizeAsBytesInRange(
+      "maxBufferAllocationSize", "10g", "0", "10t")
 
   def useOdp(context: IbvContext): Boolean = {
     conf.getBoolean(toRdmaConfKey("useOdp"), true) && {
@@ -97,7 +99,7 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
     "shuffleReadBlockSize", "256k", "0", "512m")
   lazy val maxBytesInFlight: Long = getRdmaConfSizeAsBytesInRange(
     "maxBytesInFlight", "1m", "128k", "100g")
-  lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "2m", "1g")
+  lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "1k", "1g")
   lazy val maxAggPrealloc: Long = getRdmaConfSizeAsBytesInRange("maxAggPrealloc", "0", "0", "10g")
   // Remote fetch block statistics
   lazy val collectShuffleReaderStats: Boolean = conf.getBoolean(
