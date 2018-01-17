@@ -208,6 +208,7 @@ class RdmaNode {
     "RdmaNode connection listening thread");
 
     runThread.set(true);
+    listeningThread.setDaemon(true);
     listeningThread.start();
   }
 
