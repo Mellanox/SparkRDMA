@@ -20,8 +20,8 @@ package org.apache.spark.shuffle.rdma
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.util.Timer
-import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 import java.util.concurrent.{ConcurrentLinkedDeque, LinkedBlockingQueue}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable.ListBuffer
@@ -34,6 +34,7 @@ import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.shuffle.{FetchFailedException, MetadataFetchFailedException}
 import org.apache.spark.storage.{BlockId, BlockManagerId, ShuffleBlockId}
 import org.apache.spark.util.Utils
+
 
 private[spark] final class RdmaShuffleFetcherIterator(
     context: TaskContext,

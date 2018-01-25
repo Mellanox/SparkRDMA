@@ -19,13 +19,14 @@ package org.apache.spark.shuffle.rdma
 
 import java.io.{DataInputStream, DataOutputStream, EOFException}
 import java.nio.ByteBuffer
-import java.nio.charset.Charset
 
 import org.slf4j.LoggerFactory
 import scala.collection.mutable.ArrayBuffer
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.shuffle.rdma.RdmaRpcMsgType.RdmaRpcMsgType
 import org.apache.spark.storage.BlockManagerId
+
 
 object RdmaRpcMsgType extends Enumeration {
   type RdmaRpcMsgType = Value

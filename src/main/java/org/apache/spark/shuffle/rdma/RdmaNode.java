@@ -216,8 +216,9 @@ class RdmaNode {
     logger.info("cpuList from configuration file: {}", conf.cpuList());
 
     java.util.function.Consumer<Integer> addCpuToList = (cpu) -> {
-      // Add CPUs to the list while shuffling the order of the list, so that multiple RdmaNodes on
-      // this machine will have a better change to getRdmaBlockLocation different CPUs assigned to them
+      // Add CPUs to the list while shuffling the order of the list,
+      // so that multiple RdmaNodes on this machine will have a better change
+      // to getRdmaBlockLocation different CPUs assigned to them
       cpuArrayList.add(
         cpuArrayList.isEmpty() ? 0 : new Random().nextInt(cpuArrayList.size()),
         cpu);

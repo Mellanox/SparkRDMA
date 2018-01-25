@@ -18,25 +18,17 @@
 package org.apache.spark.shuffle.rdma
 
 import com.ibm.disni.rdma.verbs.IbvContext
-import org.apache.spark.internal.Logging
-import org.apache.spark.{SPARK_VERSION, SparkConf}
-import org.apache.spark.util.Utils
 
+import org.apache.spark.{SPARK_VERSION, SparkConf}
+import org.apache.spark.internal.Logging
+import org.apache.spark.util.{Utils, VersionUtils}
 
 object SparkVersionSupport {
-  private val versionRegex = """^(\d+)\.(\d+)(\..*)?$""".r
-  val majorVersion: Int = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
-    case Some(m) => m.group(1).toInt
-    case None => throw new IllegalArgumentException("Unable to parse Spark major version from" +
-      " version string: " + SPARK_VERSION)
-  }
-  if (majorVersion != 2)
+  val majorVersion = VersionUtils.majorVersion(SPARK_VERSION)
+  if (majorVersion != 2) {
     throw new IllegalArgumentException("SparkRDMA only supports Spark versions 2.x")
-  val minorVersion: Int = versionRegex.findFirstMatchIn(SPARK_VERSION) match {
-    case Some(m) => m.group(2).toInt
-    case None => throw new IllegalArgumentException("Unable to parse Spark minor version from" +
-      " version string: " + SPARK_VERSION)
   }
+  val minorVersion = VersionUtils.minorVersion(SPARK_VERSION)
 }
 
 class RdmaShuffleConf(conf: SparkConf) extends Logging{
@@ -77,7 +69,7 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
       val ret = (rcOdpCaps != -1) &&
         ((rcOdpCaps & IbvContext.IBV_ODP_SUPPORT_WRITE) != 0) &&
         ((rcOdpCaps & IbvContext.IBV_ODP_SUPPORT_READ) != 0)
-      if (!ret){
+      if (!ret) {
         logWarning("ODP (On Demand Paging) is not supported for this device. " +
           "Please refer to the SparkRDMA wiki for more information: " +
           "https://github.com/Mellanox/SparkRDMA/wiki/Configuration-Properties")

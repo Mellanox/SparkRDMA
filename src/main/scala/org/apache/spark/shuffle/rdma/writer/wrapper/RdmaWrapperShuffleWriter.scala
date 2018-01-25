@@ -17,7 +17,7 @@
 
 package org.apache.spark.shuffle.rdma.writer.wrapper
 
-import java.io.{File, IOException, InputStream}
+import java.io.{File, InputStream, IOException}
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
@@ -27,10 +27,9 @@ import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{BaseShuffleHandle, IndexShuffleBlockResolver, ShuffleWriter}
-import org.apache.spark.shuffle.rdma._
+import org.apache.spark.shuffle.rdma.{RdmaCompletionListener, _}
 import org.apache.spark.shuffle.rdma.writer.RdmaShuffleData
 import org.apache.spark.shuffle.sort._
-import org.apache.spark.shuffle.rdma.RdmaCompletionListener
 
 class RdmaWrapperShuffleData(
     shuffleId: Int,

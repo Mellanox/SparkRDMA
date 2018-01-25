@@ -17,10 +17,11 @@
 
 package org.apache.spark.shuffle.rdma
 
-import org.slf4j.LoggerFactory
+
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+import org.slf4j.LoggerFactory
 import scala.collection.JavaConverters._
 
 import org.apache.spark.storage.BlockManagerId

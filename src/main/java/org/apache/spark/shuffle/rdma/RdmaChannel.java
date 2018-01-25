@@ -121,7 +121,7 @@ public class RdmaChannel {
   private final ConcurrentHashMap<Integer, CompletionInfo> completionInfoMap =
     new ConcurrentHashMap<>();
   // NOOP_RESERVED_INDEX is used for send operations that do not require a callback
-  private final static int NOOP_RESERVED_INDEX = 0;
+  private static final int NOOP_RESERVED_INDEX = 0;
   private final AtomicInteger completionInfoIndex = new AtomicInteger(NOOP_RESERVED_INDEX);
 
   RdmaChannel(
@@ -357,6 +357,7 @@ public class RdmaChannel {
     }
   }
 
+  @SuppressWarnings("checkstyle:EmptyCatchBlock")
   void waitForActiveConnection() {
     synchronized (rdmaChannelState) {
       try {
@@ -438,7 +439,7 @@ public class RdmaChannel {
   }
 
   void rdmaReadInQueue(RdmaCompletionListener listener, long localAddress, int lKey,
-      int sizes[], long[] remoteAddresses, int[] rKeys) throws IOException {
+      int[] sizes, long[] remoteAddresses, int[] rKeys) throws IOException {
     long offset = 0;
     LinkedList<IbvSendWR> readWRList = new LinkedList<>();
     for (int i = 0; i < remoteAddresses.length; i++) {
