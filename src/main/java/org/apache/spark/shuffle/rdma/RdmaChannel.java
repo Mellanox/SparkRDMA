@@ -611,7 +611,8 @@ public class RdmaChannel {
           boolean wcSuccess = ibvWCs[i].getStatus() == IbvWC.IbvWcStatus.IBV_WC_SUCCESS.ordinal();
           if (!wcSuccess && !isError()) {
             setRdmaChannelState(RdmaChannelState.ERROR);
-            logger.error("Completion with error: " + ibvWCs[i].getStatus());
+            logger.error("Completion with error: " +
+              IbvWC.IbvWcStatus.values()[ibvWCs[i].getStatus()].name());
           }
 
           if (ibvWCs[i].getOpcode() == IbvWC.IbvWcOpcode.IBV_WC_SEND.getOpcode() ||
@@ -808,7 +809,7 @@ public class RdmaChannel {
             processRdmaCmEvent(RdmaCmEvent.EventType.RDMA_CM_EVENT_DISCONNECTED.ordinal(),
               teardownListenTimeout);
           } catch (IOException e) {
-            logger.warn("Failed to get RDMA_CM_EVENT_DISCONNECTED");
+            logger.warn("Failed to get RDMA_CM_EVENT_DISCONNECTED: " + e.getLocalizedMessage());
           }
         }
 

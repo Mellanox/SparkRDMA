@@ -65,7 +65,7 @@ class RdmaNode {
         throw new IOException("Unable to allocate RDMA Event Channel");
       }
 
-      listenerRdmaCmId = cmChannel.createId(RdmaCm.RDMA_PS_TCP);
+      this.listenerRdmaCmId = cmChannel.createId(RdmaCm.RDMA_PS_TCP);
       if (this.listenerRdmaCmId == null) {
         throw new IOException("Unable to allocate RDMA CM Id");
       }
@@ -83,6 +83,10 @@ class RdmaNode {
       }
       if (err != 0) {
         throw new IOException("Unable to bind, err: " + err);
+      }
+
+      if (listenerRdmaCmId.getVerbs() == null){
+        throw new IOException("Failed to bind. Make sure your NIC supports RDMA");
       }
 
       initCpuArrayList();
