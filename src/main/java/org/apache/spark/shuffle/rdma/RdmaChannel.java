@@ -627,7 +627,7 @@ public class RdmaChannel {
                 } else {
                   completionInfo.listener.onFailure(
                     new IOException("RDMA Send/Write/Read WR completed with error: " +
-                      ibvWCs[i].getStatus()));
+                      IbvWC.IbvWcStatus.values()[ibvWCs[i].getStatus()].name()));
                 }
 
                 reclaimedSendPermits += completionInfo.sendPermitsToReclaim;
@@ -650,7 +650,8 @@ public class RdmaChannel {
               }
             } else {
               receiveListener.onFailure(
-                new IOException("RDMA Receive WR completed with error: " + ibvWCs[i].getStatus()));
+                new IOException("RDMA Receive WR completed with error: " +
+                  IbvWC.IbvWcStatus.values()[ibvWCs[i].getStatus()]));
             }
 
             reclaimedRecvWrs += 1;

@@ -66,7 +66,7 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
       "maxBufferAllocationSize", "10g", "0", "10t")
 
   def useOdp(context: IbvContext): Boolean = {
-    conf.getBoolean(toRdmaConfKey("useOdp"), true) && {
+    conf.getBoolean(toRdmaConfKey("useOdp"), false) && {
       val rcOdpCaps = context.queryOdpSupport()
       val ret = (rcOdpCaps != -1) &&
         ((rcOdpCaps & IbvContext.IBV_ODP_SUPPORT_WRITE) != 0) &&

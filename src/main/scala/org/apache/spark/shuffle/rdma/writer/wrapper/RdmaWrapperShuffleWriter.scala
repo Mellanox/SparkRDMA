@@ -67,7 +67,6 @@ class RdmaWrapperShuffleData(
       val rdmaFile = new RdmaMappedFile(dataFile,
         rdmaShuffleManager.rdmaShuffleConf.shuffleWriteBlockSize.toInt, lengths,
         rdmaShuffleManager.getRdmaBufferManager)
-
       // Overwrite and dispose of older file if already exists
       rdmaMappedFileByMapId.put(mapId, rdmaFile).foreach(_.dispose())
     }
@@ -80,6 +79,7 @@ class RdmaWrapperShuffleWriter[K, V, C](
     mapId: Int,
     context: TaskContext)
   extends ShuffleWriter[K, V] with Logging {
+  private val writeMetrics = context.taskMetrics().shuffleWriteMetrics
 
   private val env = SparkEnv.get
   private val writer = handle match {
@@ -108,11 +108,10 @@ class RdmaWrapperShuffleWriter[K, V, C](
       return None
     }
     stopping = true
-
     val optMapStatus = writer.stop(success)
+    val startTime = System.nanoTime()
     val rdmaShuffleManager = env.shuffleManager.asInstanceOf[RdmaShuffleManager]
     val rdmaShuffleConf = rdmaShuffleManager.rdmaShuffleConf
-
     if (success) {
       // Publish this map task's RdmaMapTaskOutput to the Driver
       val dep = handle.dependency
@@ -148,7 +147,7 @@ class RdmaWrapperShuffleWriter[K, V, C](
           throw e
       }
     }
-
+    writeMetrics.incWriteTime(System.nanoTime - startTime)
     optMapStatus
   }
 }
