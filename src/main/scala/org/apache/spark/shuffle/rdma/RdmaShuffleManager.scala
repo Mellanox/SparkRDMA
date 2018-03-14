@@ -43,10 +43,9 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   private var rdmaNode: Option[RdmaNode] = None
 
   // Used by driver only
-  type ShuffleId = Int
-  type MapId = Int
   private val mapTaskOutputsByBlockManagerId = new ConcurrentHashMap[BlockManagerId,
-    concurrent.Map[ShuffleId, concurrent.Map[MapId, RdmaMapTaskOutput]]]().asScala
+    scala.collection.concurrent.Map[Int, scala.collection.concurrent.Map[Int,
+      RdmaMapTaskOutput]]]().asScala
   private val rdmaShuffleManagersMap =
     new ConcurrentHashMap[RdmaShuffleManagerId, RdmaChannel]().asScala
   private val blockManagerIdToRdmaShuffleManagerId =
@@ -122,16 +121,21 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
           // Executors use this message to publish their RDMA MapTaskOutputs to the driver, so that
           // the driver can later provide the information to executors on-demand
           assume(isDriver)
-          val shuffleIdsMap = mapTaskOutputsByBlockManagerId.getOrElseUpdate(
-            publishMsg.blockManagerId,
-            new ConcurrentHashMap[Int, concurrent.Map[Int, RdmaMapTaskOutput]]().asScala
-          )
-          val mapIdsMap = shuffleIdsMap.getOrElseUpdate(publishMsg.shuffleId,
-            new ConcurrentHashMap[Int, RdmaMapTaskOutput]().asScala
-          )
-          val rdmaMapTaskOutput = mapIdsMap.getOrElseUpdate(publishMsg.mapId,
-            new RdmaMapTaskOutput(0, publishMsg.totalNumPartitions - 1)
-          )
+          val shuffleIdsMap = mapTaskOutputsByBlockManagerId.getOrElse(publishMsg.blockManagerId, {
+            val newShuffleIdMap = new ConcurrentHashMap[Int,
+              scala.collection.concurrent.Map[Int, RdmaMapTaskOutput]]().asScala
+            mapTaskOutputsByBlockManagerId.putIfAbsent(publishMsg.blockManagerId,
+              newShuffleIdMap).getOrElse(newShuffleIdMap)
+          })
+          val mapIdsMap = shuffleIdsMap.getOrElse(publishMsg.shuffleId, {
+            val newMapIdsMap = new ConcurrentHashMap[Int, RdmaMapTaskOutput]().asScala
+            shuffleIdsMap.putIfAbsent(publishMsg.shuffleId, newMapIdsMap).getOrElse(newMapIdsMap)
+          })
+          val rdmaMapTaskOutput = mapIdsMap.getOrElse(publishMsg.mapId, {
+            val newRdmaMapTaskOutput = new RdmaMapTaskOutput(0, publishMsg.totalNumPartitions - 1)
+            mapIdsMap.putIfAbsent(publishMsg.mapId, newRdmaMapTaskOutput).getOrElse(
+              newRdmaMapTaskOutput)
+          })
           rdmaMapTaskOutput.putRange(publishMsg.firstReduceId, publishMsg.lastReduceId,
             publishMsg.rdmaMapTaskOutput.getByteBuffer(publishMsg.firstReduceId,
               publishMsg.lastReduceId))
