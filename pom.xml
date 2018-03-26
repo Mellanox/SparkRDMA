@@ -7,7 +7,7 @@
 
   <groupId>com.github.mellanox</groupId>
   <artifactId>spark-rdma</artifactId>
-  <version>1.0</version>
+  <version>2.0</version>
   <name>${project.artifactId}</name>
   <description>SparkRDMA Shuffle Manager Plugin</description>
   <inceptionYear>2017</inceptionYear>
