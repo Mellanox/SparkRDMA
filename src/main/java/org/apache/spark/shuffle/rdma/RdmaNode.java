@@ -81,11 +81,8 @@ class RdmaNode {
         logger.info("Failed to bind to port {} on iteration {}", bindPort, i);
         bindPort = bindPort != 0 ? bindPort + 1 : 0;
       }
-      if (err != 0) {
-        throw new IOException("Unable to bind, err: " + err);
-      }
 
-      if (listenerRdmaCmId.getVerbs() == null){
+      if (err != 0 || listenerRdmaCmId.getVerbs() == null){
         throw new IOException("Failed to bind. Make sure your NIC supports RDMA");
       }
 
