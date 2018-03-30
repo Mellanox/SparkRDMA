@@ -17,65 +17,48 @@
 
 package org.apache.spark.shuffle.rdma;
 
+import org.apache.spark.unsafe.memory.MemoryBlock;
+import org.apache.spark.unsafe.memory.UnsafeMemoryAllocator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sun.misc.Unsafe;
 import com.ibm.disni.rdma.verbs.IbvPd;
 import com.ibm.disni.rdma.verbs.SVCRegMr;
 import com.ibm.disni.rdma.verbs.IbvMr;
-import sun.nio.ch.DirectBuffer;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 
-public class RdmaBuffer {
+class RdmaBuffer {
   private static final Logger logger = LoggerFactory.getLogger(RdmaBuffer.class);
-  private static final int BYTE_ARRAY_OFFSET;
 
   private IbvMr ibvMr = null;
   private final long address;
   private final int length;
+  private final MemoryBlock block;
 
-  private static final Unsafe unsafe;
-  static {
-    try {
-      Field unsafeField = Unsafe.class.getDeclaredField("theUnsafe");
-      unsafeField.setAccessible(true);
-      unsafe = (Unsafe)unsafeField.get(null);
-    } catch (IllegalAccessException | NoSuchFieldException e) {
-      logger.error("Failed to retrieve the Unsafe");
-      throw new RuntimeException(e);
-    }
+  public static final UnsafeMemoryAllocator unsafeAlloc = new UnsafeMemoryAllocator();
 
-    BYTE_ARRAY_OFFSET = unsafe.arrayBaseOffset(byte[].class);
-  }
-
-  public RdmaBuffer(IbvPd ibvPd, int length) throws IOException {
-    address = unsafe.allocateMemory((long)length);
+  RdmaBuffer(IbvPd ibvPd, int length) throws IOException {
+    block = unsafeAlloc.allocate((long)length);
+    address = block.getBaseOffset();
     this.length = length;
     register(ibvPd);
   }
 
-  public RdmaBuffer(int length) {
-    address = unsafe.allocateMemory((long)length);
-    this.length = length;
-  }
-
-  public long getAddress() {
+  long getAddress() {
     return address;
   }
-  public int getLength() {
+  int getLength() {
     return length;
   }
-  public int getLkey() {
+  int getLkey() {
     return ibvMr.getLkey();
   }
 
-  public void free() {
+  void free() {
     unregister();
-    unsafe.freeMemory(address);
+    unsafeAlloc.free(block);
   }
 
   private void register(IbvPd ibvPd) throws IOException {
@@ -98,20 +81,7 @@ public class RdmaBuffer {
     }
   }
 
-  public void write(DirectBuffer buf, long srcOffset, long dstOffset, long length) {
-    unsafe.copyMemory(buf.address() + srcOffset, getAddress() + dstOffset, length);
-  }
-
-  public void write(byte[] bytes, long srcOffset, long dstOffset, long length) {
-    unsafe.copyMemory(
-      bytes,
-      BYTE_ARRAY_OFFSET + srcOffset,
-      null,
-      getAddress() + dstOffset,
-      length);
-  }
-
-  public ByteBuffer getByteBuffer() throws IOException {
+  ByteBuffer getByteBuffer() throws IOException {
     Class<?> classDirectByteBuffer;
     try {
       classDirectByteBuffer = Class.forName("java.nio.DirectByteBuffer");
