@@ -38,7 +38,6 @@ class RdmaNode {
   private static final int BACKLOG = 128;
 
   private final RdmaShuffleConf conf;
-  private final RdmaCompletionListener receiveListener;
   private final ConcurrentHashMap<InetSocketAddress, RdmaChannel> activeRdmaChannelMap =
     new ConcurrentHashMap<>();
   private final ConcurrentHashMap<InetSocketAddress, RdmaChannel> passiveRdmaChannelMap =
@@ -56,7 +55,6 @@ class RdmaNode {
 
   RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
       final RdmaCompletionListener receiveListener) throws Exception {
-    this.receiveListener = receiveListener;
     this.conf = conf;
 
     try {
@@ -67,7 +65,7 @@ class RdmaNode {
         throw new IOException("Unable to allocate RDMA Event Channel");
       }
 
-      listenerRdmaCmId = cmChannel.createId(RdmaCm.RDMA_PS_TCP);
+      this.listenerRdmaCmId = cmChannel.createId(RdmaCm.RDMA_PS_TCP);
       if (this.listenerRdmaCmId == null) {
         throw new IOException("Unable to allocate RDMA CM Id");
       }
@@ -83,8 +81,9 @@ class RdmaNode {
         logger.info("Failed to bind to port {} on iteration {}", bindPort, i);
         bindPort = bindPort != 0 ? bindPort + 1 : 0;
       }
-      if (err != 0) {
-        throw new IOException("Unable to bind, err: " + err);
+
+      if (err != 0 || listenerRdmaCmId.getVerbs() == null){
+        throw new IOException("Failed to bind. Make sure your NIC supports RDMA");
       }
 
       initCpuArrayList();
@@ -147,22 +146,17 @@ class RdmaNode {
               }
             }
 
-            boolean isRpc = false;
+            RdmaChannel.RdmaChannelType rdmaChannelType;
             if (driverInetAddress.equals(inetSocketAddress.getAddress()) ||
-              driverInetAddress.equals(localInetSocketAddress.getAddress())) {
-              isRpc = true;
+                driverInetAddress.equals(localInetSocketAddress.getAddress())) {
+              // RPC communication is limited to driver<->executor only
+              rdmaChannelType = RdmaChannel.RdmaChannelType.RPC_RESPONDER;
+            } else {
+              rdmaChannelType = RdmaChannel.RdmaChannelType.RDMA_READ_RESPONDER;
             }
 
-            rdmaChannel = new RdmaChannel(
-              conf,
-              rdmaBufferManager,
-              false,
-              true,
-              receiveListener,
-              cmId,
-              isRpc,
-              true,
-              getNextCpuVector());
+            rdmaChannel = new RdmaChannel(rdmaChannelType, conf, rdmaBufferManager, receiveListener,
+              cmId, getNextCpuVector());
             if (passiveRdmaChannelMap.putIfAbsent(inetSocketAddress, rdmaChannel) != null) {
               logger.warn("Race in creating an RDMA Channel for " + inetSocketAddress);
               rdmaChannel.stop();
@@ -215,6 +209,7 @@ class RdmaNode {
     "RdmaNode connection listening thread");
 
     runThread.set(true);
+    listeningThread.setDaemon(true);
     listeningThread.start();
   }
 
@@ -222,8 +217,9 @@ class RdmaNode {
     logger.info("cpuList from configuration file: {}", conf.cpuList());
 
     java.util.function.Consumer<Integer> addCpuToList = (cpu) -> {
-      // Add CPUs to the list while shuffling the order of the list, so that multiple RdmaNodes on
-      // this machine will have a better change to get different CPUs assigned to them
+      // Add CPUs to the list while shuffling the order of the list,
+      // so that multiple RdmaNodes on this machine will have a better change
+      // to getRdmaBlockLocation different CPUs assigned to them
       cpuArrayList.add(
         cpuArrayList.isEmpty() ? 0 : new Random().nextInt(cpuArrayList.size()),
         cpu);
@@ -286,18 +282,20 @@ class RdmaNode {
     long elapsedTime = 0;
     int connectionAttempts = 0;
 
-    RdmaChannel rdmaChannel = null;
+    RdmaChannel rdmaChannel;
     do {
       rdmaChannel = activeRdmaChannelMap.get(remoteAddr);
       if (rdmaChannel == null) {
-        rdmaChannel = new RdmaChannel(
-          conf,
-          rdmaBufferManager,
-          true,
-          false,
-          receiveListener,
-          false,
-          false,
+        RdmaChannel.RdmaChannelType rdmaChannelType;
+        if (driverInetAddress.equals(remoteAddr.getAddress()) ||
+            driverInetAddress.equals(localInetSocketAddress.getAddress())) {
+          // RPC communication is limited to driver<->executor only
+          rdmaChannelType = RdmaChannel.RdmaChannelType.RPC_REQUESTOR;
+        } else {
+          rdmaChannelType = RdmaChannel.RdmaChannelType.RDMA_READ_REQUESTOR;
+        }
+
+        rdmaChannel = new RdmaChannel(rdmaChannelType, conf, rdmaBufferManager, null,
           getNextCpuVector());
 
         RdmaChannel actualRdmaChannel = activeRdmaChannelMap.putIfAbsent(remoteAddr, rdmaChannel);
@@ -345,7 +343,7 @@ class RdmaNode {
       }
     } while (mustRetry && (connectionTimeout - elapsedTime) > 0);
 
-    if (mustRetry && (rdmaChannel == null || !rdmaChannel.isConnected())) {
+    if (mustRetry && !rdmaChannel.isConnected()) {
       throw new IOException("Timeout in establishing a connection to " + remoteAddr.toString());
     }
 
