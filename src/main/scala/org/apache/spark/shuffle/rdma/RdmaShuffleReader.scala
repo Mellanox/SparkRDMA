@@ -23,10 +23,10 @@ import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.serializer.SerializerManager
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleReader}
+import org.apache.spark.shuffle.rdma.RdmaShuffleReader.wrapStreamMethod
 import org.apache.spark.storage.{BlockId, BlockManager, ShuffleBlockId}
 import org.apache.spark.util.CompletionIterator
 import org.apache.spark.util.collection.ExternalSorter
-import org.apache.spark.shuffle.rdma.RdmaShuffleReader.wrapStreamMethod
 
 private[spark] class RdmaShuffleReader[K, C](
     handle: BaseShuffleHandle[K, _, C],
@@ -45,7 +45,8 @@ private[spark] class RdmaShuffleReader[K, C](
       context,
       startPartition,
       endPartition,
-      handle.shuffleId)
+      handle.shuffleId,
+      mapOutputTracker.getMapSizesByExecutorId(handle.shuffleId, startPartition, endPartition))
 
     val dummyShuffleBlockId = ShuffleBlockId(0, 0, 0)
     // Wrap the streams for compression based on configuration
