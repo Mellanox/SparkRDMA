@@ -17,8 +17,6 @@
 
 package org.apache.spark.shuffle.rdma;
 
-import com.ibm.disni.rdma.verbs.IbvPd;
-
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.nio.ByteBuffer;
@@ -35,10 +33,6 @@ public class RdmaRegisteredBuffer {
     this.rdmaBufferManager = rdmaBufferManager;
     this.rdmaBuffer = rdmaBufferManager.get(length);
     assert this.rdmaBuffer != null;
-  }
-
-  public RdmaRegisteredBuffer(IbvPd ibvPd, int length) throws IOException {
-    this.rdmaBuffer = new RdmaBuffer(ibvPd, length);
   }
 
   int getLkey() {
