@@ -29,59 +29,31 @@ import java.util.List;
 import com.ibm.disni.rdma.verbs.IbvMr;
 import com.ibm.disni.rdma.verbs.IbvPd;
 import com.ibm.disni.rdma.verbs.SVCRegMr;
-import scala.Int;
-import sun.misc.Unsafe;
-import sun.nio.ch.DirectBuffer;
 import sun.nio.ch.FileChannelImpl;
 
 public class RdmaMappedFile {
-  private static final Unsafe unsafe;
   private static final Method mmap;
   private static final Method unmmap;
-  private static final int BYTE_ARRAY_OFFSET;
   private static final int ACCESS = IbvMr.IBV_ACCESS_REMOTE_READ;
 
   private File file = null;
   private FileChannel fileChannel = null;
 
   private final IbvPd ibvPd;
-  private final long fileLength;
+  private IbvMr odpMr = null;
 
-  private class RdmaPartitionBlockLocations {
-    private final ByteBuffer byteBuffer;
-    private static final int ENTRY_SIZE = 8 + 4 + 4;
-
-    RdmaPartitionBlockLocations(int numPartitions) {
-      byteBuffer = ByteBuffer.allocate(numPartitions * ENTRY_SIZE);
-    }
-
-    RdmaBlockLocation get(int partitionId) {
-      return new RdmaBlockLocation(
-        byteBuffer.getLong(partitionId * ENTRY_SIZE),
-        byteBuffer.getInt(partitionId * ENTRY_SIZE + 8),
-        byteBuffer.getInt(partitionId * ENTRY_SIZE + 8 + 4));
-    }
-
-    void put(long address, int length, int mKey) {
-      byteBuffer.putLong(address);
-      byteBuffer.putInt(length);
-      byteBuffer.putInt(mKey);
-    }
-  }
-  private RdmaPartitionBlockLocations rdmaPartitionBlockLocations = null;
+  private final RdmaMapTaskOutput rdmaMapTaskOutput;
+  public RdmaMapTaskOutput getRdmaMapTaskOutput() { return rdmaMapTaskOutput; }
 
   private class RdmaFileMapping {
     final IbvMr ibvMr;
-    final long fileOffset;
     final long address;
     final long mapAddress;
     final long length;
     final long alignedLength;
 
-    RdmaFileMapping(IbvMr ibvMr, long fileOffset, long address, long mapAddress, long length,
-        long alignedLength) {
+    RdmaFileMapping(IbvMr ibvMr, long address, long mapAddress, long length, long alignedLength) {
       this.ibvMr = ibvMr;
-      this.fileOffset = fileOffset;
       this.address = address;
       this.mapAddress = mapAddress;
       this.length = length;
@@ -92,55 +64,26 @@ public class RdmaMappedFile {
 
   static {
     try {
-      Field unsafeField = Unsafe.class.getDeclaredField("theUnsafe");
-      unsafeField.setAccessible(true);
-      unsafe = (Unsafe)unsafeField.get(null);
-
-      mmap = FileChannelImpl.class.getDeclaredMethod("map0", int.class, long.class,
-        long.class);
+      mmap = FileChannelImpl.class.getDeclaredMethod("map0", int.class, long.class, long.class);
       mmap.setAccessible(true);
       unmmap = FileChannelImpl.class.getDeclaredMethod("unmap0", long.class, long.class);
       unmmap.setAccessible(true);
     } catch (Exception e){
       throw new RuntimeException(e);
     }
-
-    BYTE_ARRAY_OFFSET = unsafe.arrayBaseOffset(byte[].class);
   }
 
-  RdmaMappedFile(File file, IbvPd ibvPd) throws IOException, InvocationTargetException,
+  public RdmaMappedFile(File file, int chunkSize, long[] partitionLengths,
+      RdmaBufferManager rdmaBufferManager) throws IOException, InvocationTargetException,
       IllegalAccessException {
-    this(file, ibvPd, file.length());
-  }
-
-  public RdmaMappedFile(File file, IbvPd ibvPd, long fileLength) throws IOException,
-      InvocationTargetException, IllegalAccessException {
     this.file = file;
-    this.fileLength = fileLength;
-    this.ibvPd = ibvPd;
-
-    final RandomAccessFile backingFile = new RandomAccessFile(file, "rw");
-    backingFile.setLength(roundUpTo4096(this.fileLength));
-
-    this.fileChannel = backingFile.getChannel();
-
-    mapAndRegister();
-
-    fileChannel.close();
-    fileChannel = null;
-
-    file.deleteOnExit();
-  }
-
-  public RdmaMappedFile(File file, IbvPd ibvPd, int chunkSize, long[] partitionLengths)
-      throws IOException, InvocationTargetException, IllegalAccessException {
-    this.file = file;
-    this.fileLength = file.length();
-    this.ibvPd = ibvPd;
+    this.ibvPd = rdmaBufferManager.getPd();
+    this.odpMr = rdmaBufferManager.getOdpMr();
 
     final RandomAccessFile backingFile = new RandomAccessFile(file, "rw");
     this.fileChannel = backingFile.getChannel();
 
+    rdmaMapTaskOutput = new RdmaMapTaskOutput(0, partitionLengths.length - 1);
     mapAndRegister(chunkSize, partitionLengths);
 
     fileChannel.close();
@@ -153,18 +96,8 @@ public class RdmaMappedFile {
     return (i + 0xfffL) & ~0xfffL;
   }
 
-  public void write(DirectBuffer buf, long srcOffset, long dstOffset, long length) {
-    unsafe.copyMemory(buf.address() + srcOffset, getAddressForOffset(dstOffset, length), length);
-  }
-
-  public void write(byte[] bytes, long srcOffset, long dstOffset, long length) {
-    unsafe.copyMemory(bytes, BYTE_ARRAY_OFFSET + srcOffset, null,
-      getAddressForOffset(dstOffset, length), length);
-  }
-
   private void mapAndRegister(int chunkSize, long[] partitionLengths) throws IOException,
       InvocationTargetException, IllegalAccessException {
-    rdmaPartitionBlockLocations = new RdmaPartitionBlockLocations(partitionLengths.length);
     long offset = 0;
     long curLength = 0;
 
@@ -198,10 +131,11 @@ public class RdmaMappedFile {
         curLength += partitionLengths[curPartition];
 
         if (curLength <= rdmaFileMapping.length) {
-          rdmaPartitionBlockLocations.put(
+          rdmaMapTaskOutput.put(
+            curPartition,
             rdmaFileMapping.address + curLength - partitionLengths[curPartition],
             (int)partitionLengths[curPartition],
-            rdmaFileMapping.ibvMr.getLkey());
+            (rdmaFileMapping.ibvMr != null) ? rdmaFileMapping.ibvMr.getLkey() : odpMr.getLkey());
           curPartition++;
         }
       }
@@ -216,27 +150,31 @@ public class RdmaMappedFile {
     long mapAddress = (long)mmap.invoke(fileChannel, 1, alignedOffset, alignedLength);
     long address = mapAddress + distanceFromPageBoundary;
 
-    if (length > Int.MaxValue()) {
-      throw new IOException("Registering files larger than " + Int.MaxValue() +
-        "B is not supported");
+    if (length > Integer.MAX_VALUE) {
+      throw new IOException("Registering files larger than " + Integer.MAX_VALUE + "B is not " +
+        "supported");
     }
 
-    SVCRegMr svcRegMr = ibvPd.regMr(address, (int)length, ACCESS).execute();
-    IbvMr ibvMr = svcRegMr.getMr();
-    svcRegMr.free();
+    IbvMr ibvMr = null;
+    if (odpMr == null) {
+      SVCRegMr svcRegMr = ibvPd.regMr(address, (int)length, ACCESS).execute();
+      ibvMr = svcRegMr.getMr();
+      svcRegMr.free();
+    } else {
+      int ret = odpMr.expPrefetchMr(address, (int)length);
+      if (ret != 0) {
+        throw new IOException("expPrefetchMr failed with: " + ret);
+      }
+    }
 
-    rdmaFileMappings.add(
-      new RdmaFileMapping(ibvMr, fileOffset, address, mapAddress, length, alignedLength));
-  }
-
-  private void mapAndRegister() throws IOException, InvocationTargetException,
-      IllegalAccessException {
-    mapAndRegister(0, fileLength);
+    rdmaFileMappings.add(new RdmaFileMapping(ibvMr, address, mapAddress, length, alignedLength));
   }
 
   private void unregisterAndUnmap(RdmaFileMapping rdmaFileMapping) throws InvocationTargetException,
       IllegalAccessException, IOException {
-    rdmaFileMapping.ibvMr.deregMr().execute().free();
+    if (rdmaFileMapping.ibvMr != null) {
+      rdmaFileMapping.ibvMr.deregMr().execute().free();
+    }
     unmmap.invoke(null, rdmaFileMapping.mapAddress, rdmaFileMapping.alignedLength);
   }
 
@@ -256,6 +194,7 @@ public class RdmaMappedFile {
     }
     if (file != null) {
       file.delete();
+      file = null;
     }
   }
 
@@ -283,45 +222,8 @@ public class RdmaMappedFile {
     return byteBuffer;
   }
 
-  public ByteBuffer getByteBuffer() throws IOException {
-    return getByteBuffer(getAddressForOffset(0, fileLength), (int)fileLength);
-  }
-
-  private RdmaFileMapping getRdmaFileMappingForOffset(long fileOffset, long length) {
-    // TODO: improve with binary search
-    for (RdmaFileMapping rdmaFileMapping : rdmaFileMappings) {
-      if (rdmaFileMapping.fileOffset <= fileOffset &&
-        (rdmaFileMapping.fileOffset + rdmaFileMapping.length > fileOffset)) {
-        if (fileOffset - rdmaFileMapping.fileOffset + length > rdmaFileMapping.length) {
-          throw new IndexOutOfBoundsException(
-            "Requested mapping for an offset that is not mapped in full");
-        }
-        return rdmaFileMapping;
-      }
-    }
-
-    throw new IndexOutOfBoundsException("Requested mapping for an offset that wasn't mapped");
-  }
-
-  private long getAddressForOffset(long fileOffset, long length) {
-    RdmaFileMapping rdmaFileMapping = getRdmaFileMappingForOffset(fileOffset, length);
-    return rdmaFileMapping.address + fileOffset - rdmaFileMapping.fileOffset;
-  }
-
-  public RdmaBlockLocation getRdmaBlockLocationForOffset(long fileOffset, long length) {
-    RdmaFileMapping rdmaFileMapping = getRdmaFileMappingForOffset(fileOffset, length);
-    return new RdmaBlockLocation(
-      rdmaFileMapping.address + fileOffset - rdmaFileMapping.fileOffset,
-      (int)length,
-      rdmaFileMapping.ibvMr.getLkey());
-  }
-
-  public RdmaBlockLocation getRdmaBlockLocationForPartition(int partitionId) {
-    return rdmaPartitionBlockLocations.get(partitionId);
-  }
-
   public ByteBuffer getByteBufferForPartition(int partitionId) throws IOException {
-    RdmaBlockLocation rdmaBlockLocation = getRdmaBlockLocationForPartition(partitionId);
+    RdmaBlockLocation rdmaBlockLocation = rdmaMapTaskOutput.getRdmaBlockLocation(partitionId);
     return (rdmaBlockLocation.length() == 0) ? null :
       getByteBuffer(rdmaBlockLocation.address(), rdmaBlockLocation.length());
   }

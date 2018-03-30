@@ -34,6 +34,7 @@ class RdmaThread implements Runnable {
   RdmaThread(RdmaChannel rdmaChannel, int cpuVector) {
     this.rdmaChannel = rdmaChannel;
     this.cpuVector = cpuVector;
+    thread.setDaemon(true);
   }
 
   synchronized void start() {
