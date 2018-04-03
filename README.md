@@ -5,16 +5,19 @@ performing Shuffle data transfers in Spark jobs.
 This open-source project is developed, maintained and supported by [Mellanox Technologies](http://www.mellanox.com).
 
 ## Performance results
-Example performance speedup for [HiBench](https://github.com/intel-hadoop/HiBench) TeraSort:
-![Alt text](https://user-images.githubusercontent.com/1121987/37930913-cdc3591c-314c-11e8-9794-d30db5900751.png)
+Example performance speedup for [HiBench](https://github.com/intel-hadoop/HiBench) workloads:
 
-Running TeraSort with SparkRDMA is x1.53 faster than standard Spark (runtime in seconds)
+![TeraSort results](https://user-images.githubusercontent.com/1121987/38248890-83097350-3752-11e8-8aba-5cc8ed89a9b2.png)
 
-Testbed:
+Running 175GB TeraSort workload with SparkRDMA is x1.53 faster than standard Spark (runtime in seconds)
 
-175GB Workload
+![ScalaSort results](https://user-images.githubusercontent.com/1121987/38267993-ac3089d4-3785-11e8-91f9-016d363a8fb1.png)
 
-16 Workers, 2x Intel Xeon E5-2697 v3 @ 2.60GHz, 30 cores per Worker, 256GB RAM, non-flash storage (HDD)
+Running 286GB ScalaSort with SparkRDMA is x1.28 faster than standard Spark (runtime in seconds)
+
+Test environment:
+
+16 Spark standalone workers, 2x Intel Xeon E5-2697 v3 @ 2.60GHz, 30 cores per Worker, 256GB RAM, non-flash storage (HDD)
 
 Mellanox ConnectX-4 network adapter with 100GbE RoCE fabric, connected with a Mellanox Spectrum switch
 
