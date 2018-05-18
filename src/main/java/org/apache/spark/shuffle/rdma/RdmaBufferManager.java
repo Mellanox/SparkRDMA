@@ -35,6 +35,7 @@ import scala.concurrent.ExecutionContextExecutor;
 public class RdmaBufferManager {
   private class AllocatorStack {
     private final AtomicInteger totalAlloc = new AtomicInteger(0);
+    private final AtomicInteger preAllocs = new AtomicInteger(0);
     private final ConcurrentLinkedDeque<RdmaBuffer> stack = new ConcurrentLinkedDeque<>();
     private final int length;
     private long lastAccess;
@@ -46,6 +47,10 @@ public class RdmaBufferManager {
 
     private int getTotalAlloc() {
       return totalAlloc.get();
+    }
+
+    private int getTotalPreAllocs() {
+      return preAllocs.get();
     }
 
     private RdmaBuffer get() throws IOException {
@@ -61,6 +66,7 @@ public class RdmaBufferManager {
     }
 
     private void put(RdmaBuffer rdmaBuffer) {
+      rdmaBuffer.clean();
       lastAccess = System.nanoTime();
       stack.addLast(rdmaBuffer);
       idleBuffersSize.addAndGet(length);
@@ -68,9 +74,10 @@ public class RdmaBufferManager {
 
     private void preallocate(int numBuffers) throws IOException {
       logger.debug("Pre allocating {} buffer of size {} KB", numBuffers, length / 1024);
+      RdmaBuffer[] preAllocatedBuffers = RdmaBuffer.preAllocate(getPd(), length, numBuffers);
       for (int i = 0; i < numBuffers; i++) {
-        put(new RdmaBuffer(getPd(), length));
-        totalAlloc.getAndIncrement();
+        put(preAllocatedBuffers[i]);
+        preAllocs.getAndIncrement();
       }
     }
 
@@ -90,7 +97,7 @@ public class RdmaBufferManager {
   private final int minimumAllocationSize;
   private final ConcurrentHashMap<Integer, AllocatorStack> allocStackMap =
     new ConcurrentHashMap<>();
-  private IbvPd pd = null;
+  private IbvPd pd;
   private IbvMr odpMr = null;
   private long maxCacheSize;
   private static final ExecutionContextExecutor globalScalaExecutor =
@@ -112,12 +119,12 @@ public class RdmaBufferManager {
     int aggBlockPrealloc = (int)(conf.maxAggPrealloc() / conf.maxAggBlock());
     if (aggBlockPrealloc > 0 && isExecutor) {
       AllocatorStack allocatorStack = getOrCreateAllocatorStack((int)conf.maxAggBlock());
-      FutureTask<Void> preAllocate = new FutureTask<>(() -> {
-        allocatorStack.preallocate(aggBlockPrealloc);
-        return null;
-      });
-      globalScalaExecutor.execute(preAllocate);
+      allocatorStack.preallocate(aggBlockPrealloc);
     }
+  }
+
+  public void preAllocate(int length, int numBuffers) throws IOException {
+    getOrCreateAllocatorStack(length).preallocate(numBuffers);
   }
 
   private AllocatorStack getOrCreateAllocatorStack(int length) {
@@ -167,7 +174,7 @@ public class RdmaBufferManager {
     }
   }
 
-  private void cleanLRUStacks(long idleBuffersSize){
+  private void cleanLRUStacks(long idleBuffersSize) {
     logger.debug("Current idle buffer size {}KB exceed 90% of maxCacheSize {}KB." +
         " Cleaning LRU idle stacks", idleBuffersSize / 1024, maxCacheSize / 1024);
     AllocatorStack lruStack = allocStackMap.values().stream()
@@ -196,8 +203,8 @@ public class RdmaBufferManager {
     for (Integer size : allocStackMap.keySet()) {
       AllocatorStack allocatorStack = allocStackMap.remove(size);
       if (allocatorStack != null) {
-        logger.info("Allocated " + allocatorStack.getTotalAlloc() + " buffers of size " +
-          (size /1024) + " KB");
+        logger.info( "Pre allocated {}, allocated {} buffers of size {} KB",
+            allocatorStack.getTotalPreAllocs(), allocatorStack.getTotalAlloc(), (size / 1024));
         allocatorStack.close();
       }
     }
