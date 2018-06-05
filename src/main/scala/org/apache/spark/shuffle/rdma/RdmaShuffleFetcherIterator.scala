@@ -78,6 +78,9 @@ private[spark] final class RdmaShuffleFetcherIterator(
   initialize()
 
   private[this] def cleanup() {
+    logDebug(s"ShuffleId: $shuffleId, reduceId: ${context.partitionId()}\n" +
+            s"Number blocks processed: $numBlocksProcessed,\n" +
+            s"total fetch wait time: ${shuffleMetrics.fetchWaitTime}")
     isStopped = true
     currentResult match {
       case SuccessFetchResult(_, _, inputStream) if inputStream != null => inputStream.close()

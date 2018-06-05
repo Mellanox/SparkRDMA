@@ -36,11 +36,11 @@ public class RdmaMappedFile {
   private static final Method unmmap;
   private static final int ACCESS = IbvMr.IBV_ACCESS_REMOTE_READ;
 
-  private File file = null;
-  private FileChannel fileChannel = null;
+  private File file;
+  private FileChannel fileChannel;
 
   private final IbvPd ibvPd;
-  private IbvMr odpMr = null;
+  private IbvMr odpMr;
 
   private final RdmaMapTaskOutput rdmaMapTaskOutput;
   public RdmaMapTaskOutput getRdmaMapTaskOutput() { return rdmaMapTaskOutput; }
@@ -215,6 +215,9 @@ public class RdmaMappedFile {
     ByteBuffer byteBuffer;
     try {
       byteBuffer = (ByteBuffer)constructor.newInstance(address, length);
+    } catch (InvocationTargetException ex) {
+      throw new IOException("java.nio.DirectByteBuffer: " +
+        "InvocationTargetException: " + ex.getTargetException());
     } catch (Exception e) {
       throw new IOException("java.nio.DirectByteBuffer exception: " + e.toString());
     }
