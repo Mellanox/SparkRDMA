@@ -476,6 +476,47 @@ public class RdmaChannel {
     }
   }
 
+  /**
+   * RDMA write buffer(localAddress, localLength, lKey) to remote buffer at remoteAddress
+   * @param listener
+   * @param localAddress
+   * @param localLength
+   * @param lKey
+   * @param remoteAddress
+   * @param rKey
+   * @throws IOException
+   */
+  public void rdmaWriteInQueue(RdmaCompletionListener listener, long localAddress, int localLength,
+      int lKey, long remoteAddress, int rKey) throws IOException {
+    LinkedList<IbvSendWR> writeWRList = new LinkedList<>();
+
+    IbvSge writeSge = new IbvSge();
+    writeSge.setAddr(localAddress);
+    writeSge.setLength(localLength);
+    writeSge.setLkey(lKey);
+
+    LinkedList<IbvSge> writeSgeList = new LinkedList<>();
+    writeSgeList.add(writeSge);
+
+    IbvSendWR writeWr = new IbvSendWR();
+    writeWr.setOpcode(IbvSendWR.IbvWrOcode.IBV_WR_RDMA_WRITE.ordinal());
+    writeWr.setSg_list(writeSgeList);
+    writeWr.getRdma().setRemote_addr(remoteAddress);
+    writeWr.getRdma().setRkey(rKey);
+    writeWr.setSend_flags(IbvSendWR.IBV_SEND_SIGNALED);
+    writeWRList.add(writeWr);
+
+    int completionInfoId = putCompletionInfo(new CompletionInfo(listener, 1));
+    writeWRList.getLast().setWr_id(completionInfoId);
+
+    try {
+      rdmaPostWRListInQueue(new PendingSend(writeWRList, 0));
+    } catch (Exception e) {
+      removeCompletionInfo(completionInfoId);
+      throw e;
+    }
+  }
+
   public void rdmaSendInQueue(RdmaCompletionListener listener, long[] localAddresses, int[] lKeys,
       int[] sizes) throws IOException {
     LinkedList<IbvSendWR> sendWRList = new LinkedList<>();
