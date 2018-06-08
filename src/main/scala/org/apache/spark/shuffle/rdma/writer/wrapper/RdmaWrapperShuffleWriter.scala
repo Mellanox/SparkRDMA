@@ -118,6 +118,8 @@ class RdmaWrapperShuffleWriter[K, V, C](
       val rdmaMapTaskOutput = rdmaShuffleBlockResolver.getRdmaShuffleData(dep.shuffleId).
         asInstanceOf[RdmaWrapperShuffleData].getRdmaMappedFileForMapId(mapId).getRdmaMapTaskOutput
 
+      rdmaShuffleManager.publishMapTaskOutput(dep.shuffleId, mapId, rdmaMapTaskOutput)
+
       val rdmaChannel = rdmaShuffleManager.getRdmaChannelToDriver(mustRetry = true)
       val buffers = new RdmaPublishMapTaskOutputRpcMsg(
         rdmaShuffleManager.getLocalRdmaShuffleManagerId.blockManagerId,

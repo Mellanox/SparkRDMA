@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import scala.concurrent.{Future, Promise}
 
+import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
 
 object RdmaMapTaskOutput {
@@ -41,7 +42,12 @@ class RdmaMapTaskOutput private[rdma](
   private[rdma] def size: Int = getNumPartitions * ENTRY_SIZE
 
   final private val fillCount = new AtomicInteger(getNumPartitions)
-  final private val byteBuffer = ByteBuffer.allocate(getNumPartitions * ENTRY_SIZE)
+  final private val bufferManager = SparkEnv.get.shuffleManager.asInstanceOf[RdmaShuffleManager]
+    .getRdmaBufferManager
+  final private val rdmaBuffer = bufferManager.get(getNumPartitions * ENTRY_SIZE)
+  def getRdmaBuffer: RdmaBuffer = rdmaBuffer
+  final private val byteBuffer = rdmaBuffer.getByteBuffer
+
   final private val fillPromise = Promise[Unit]
   final val fillFuture: Future[Unit] = fillPromise.future
 

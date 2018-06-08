@@ -176,6 +176,7 @@ public class RdmaMappedFile {
       rdmaFileMapping.ibvMr.deregMr().execute().free();
     }
     unmmap.invoke(null, rdmaFileMapping.mapAddress, rdmaFileMapping.alignedLength);
+    getRdmaMapTaskOutput().getRdmaBuffer().free();
   }
 
   private void unregisterAndUnmap() throws InvocationTargetException, IllegalAccessException,

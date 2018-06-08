@@ -245,8 +245,10 @@ class RdmaPublishMapTaskOutputRpcMsg(
     while (curStartReduceId < rdmaMapTaskOutput.getNumPartitions) {
       nextOut()
       val byteBuffer = rdmaMapTaskOutput.getByteBuffer(curStartReduceId, curLastReduceId)
-      curOut._1.write(byteBuffer.array(), byteBuffer.arrayOffset() + byteBuffer.position(),
-        byteBuffer.remaining())
+      val buf = new Array[Byte](byteBuffer.remaining())
+      byteBuffer.get(buf)
+
+      curOut._1.write(buf, 0, buf.length)
       curStartReduceId = curLastReduceId + 1
     }
   }
