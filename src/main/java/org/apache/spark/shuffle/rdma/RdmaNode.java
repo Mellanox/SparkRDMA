@@ -197,7 +197,8 @@ class RdmaNode {
 
             rdmaChannel.stop();
           } else {
-            logger.info("Received an unexpected CM Event {}", eventType);
+            logger.info("Received an unexpected CM Event {}",
+                RdmaCmEvent.EventType.values()[eventType]);
           }
         } catch (Exception e) {
           e.printStackTrace();

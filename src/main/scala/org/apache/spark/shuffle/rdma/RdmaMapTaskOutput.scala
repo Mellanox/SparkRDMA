@@ -44,7 +44,7 @@ class RdmaMapTaskOutput private[rdma](
   final private val fillCount = new AtomicInteger(getNumPartitions)
   final private val bufferManager = SparkEnv.get.shuffleManager.asInstanceOf[RdmaShuffleManager]
     .getRdmaBufferManager
-  final private val rdmaBuffer = bufferManager.get(getNumPartitions * ENTRY_SIZE)
+  final private val rdmaBuffer = bufferManager.get(size)
   def getRdmaBuffer: RdmaBuffer = rdmaBuffer
   final private val byteBuffer = rdmaBuffer.getByteBuffer
 

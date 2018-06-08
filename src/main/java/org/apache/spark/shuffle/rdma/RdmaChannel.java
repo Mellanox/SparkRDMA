@@ -883,6 +883,9 @@ public class RdmaChannel {
       }
 
       if (cq != null) {
+        if (ackCounter > 0) {
+          cq.ackEvents(ackCounter);
+        }
         int ret = cq.destroyCQ();
         if (ret != 0) {
           logger.error("destroyCQ failed with errno: " + ret);

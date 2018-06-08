@@ -51,7 +51,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       RdmaMapTaskOutput]]]().asScala
   private val rdmaShuffleManagersMap =
     new ConcurrentHashMap[RdmaShuffleManagerId, RdmaChannel]().asScala
-  private val blockManagerIdToRdmaShuffleManagerId =
+  val blockManagerIdToRdmaShuffleManagerId =
     new ConcurrentHashMap[BlockManagerId, RdmaShuffleManagerId]().asScala
   private val shuffleIdToBufferAddress = new ConcurrentHashMap[ShuffleId, RdmaBuffer]().asScala
 
@@ -71,8 +71,8 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   private val shuffleIdToDriverBufferInfo = new ConcurrentHashMap[ShuffleId, BufferInfo]().asScala
 
   // Table from shuffleId to RdmaBuffer for mapTaskOutput
-  private val shuffleIdToMapAddressBuffer =
-    new ConcurrentHashMap[ShuffleId, Future[RdmaBuffer]]().asScala
+  val shuffleIdToMapAddressBuffer =
+    new ConcurrentHashMap[ShuffleId, Future[RdmaBuffer]]()
 
   // Shared implementation for receive RPC handling for both driver and executors
   val receiveListener = new RdmaCompletionListener {
@@ -124,8 +124,10 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
           // can be done in the background, before shuffle phases begin
           assume(!isDriver)
           announceMsg.rdmaShuffleManagerIds.filter(_ != localRdmaShuffleManagerId.get).foreach {
-            rdmaShuffleManagerId => Future { getRdmaChannel(rdmaShuffleManagerId,
-              mustRetry = false) }
+            rdmaShuffleManagerId =>
+              blockManagerIdToRdmaShuffleManagerId.put(rdmaShuffleManagerId.blockManagerId,
+                rdmaShuffleManagerId)
+              Future { getRdmaChannel(rdmaShuffleManagerId, mustRetry = false) }
           }
 
         case publishMsg: RdmaPublishMapTaskOutputRpcMsg =>
@@ -431,6 +433,48 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     getRdmaBufferManager, length)
 
   def getLocalRdmaShuffleManagerId: RdmaShuffleManagerId = localRdmaShuffleManagerId.get
+
+  /**
+   * Retrieves on each executor MapTaskOutputTable from driver.
+   * @param shuffleId
+   * @return
+   */
+  def getMapTaskOutputTable(shuffleId: ShuffleId): Future[RdmaBuffer] = {
+    shuffleIdToMapAddressBuffer.computeIfAbsent(shuffleId,
+      new java.util.function.Function[ShuffleId, Future[RdmaBuffer]] {
+       override def apply(v1: ShuffleId): Future[RdmaBuffer] = {
+         val result = Promise[RdmaBuffer]
+         val startTime = System.currentTimeMillis()
+         val BufferInfo(rAddress, rLength, rKey) = shuffleIdToDriverBufferInfo(shuffleId)
+         val mapTaskOutputBuffer = getRdmaBufferManager.get(rLength)
+         val channel = getRdmaChannelToDriver(true)
+         val listener = new RdmaCompletionListener {
+           override def onSuccess(buf: ByteBuffer): Unit = {
+             result.complete(Success(mapTaskOutputBuffer))
+             logInfo(s"RDMA read mapTaskOutput table for shuffleId: $shuffleId " +
+               s"took ${Utils.getUsedTimeMs(startTime)}")
+           }
+
+           override def onFailure(exception: Throwable): Unit = {
+             logError(s"Failed to RDMA read MapTaskOutput from driver")
+             result.complete(Failure(exception))
+           }
+
+         }
+         val addresses = Array(rAddress)
+         val sizes = Array(rLength)
+         val rKeys = Array(rKey)
+         logInfo(s"Getting MapTaskOutput table for shuffleId: $shuffleId " +
+           s"of size $rLength from driver")
+         channel.rdmaReadInQueue(
+           listener, mapTaskOutputBuffer.getAddress, mapTaskOutputBuffer.getLkey,
+           sizes, addresses, rKeys)
+
+         result.future
+       }
+      })
+    shuffleIdToMapAddressBuffer.get(shuffleId)
+  }
 
   /**
    * Doing RDMA write of MapTaskOutput buffer to driver at position of mapId*ENTRY_SIZE
