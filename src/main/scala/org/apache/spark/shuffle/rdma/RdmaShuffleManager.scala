@@ -32,11 +32,12 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.{SparkListener, SparkListenerBlockManagerRemoved}
 import org.apache.spark.shuffle.{BaseShuffleHandle, _}
 import org.apache.spark.shuffle.rdma.writer.wrapper.RdmaWrapperShuffleWriter
-import org.apache.spark.shuffle.sort.{SerializedShuffleHandle, SortShuffleManager}
+import org.apache.spark.shuffle.sort.SortShuffleManager
 import org.apache.spark.storage.BlockManagerId
 
 private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     extends ShuffleManager with Logging {
+  import RdmaShuffleManager._
   val rdmaShuffleConf = new RdmaShuffleConf(conf)
   override val shuffleBlockResolver = new RdmaShuffleBlockResolver(this)
   private var localRdmaShuffleManagerId: Option[RdmaShuffleManagerId] = None
@@ -62,6 +63,12 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       null
     }
   }
+
+  // Mapping from shuffleId to driver's address, length, key of MapOutputLocation buffer
+  private val shuffleIdToDriverBufferInfo = new ConcurrentHashMap[ShuffleId, BufferInfo]().asScala
+
+  // Table from shuffleId to RdmaBuffer for mapTaskOutput
+  private val shuffleIdToMapAddressBuffer = new ConcurrentHashMap[ShuffleId, RdmaBuffer]().asScala
 
   // Shared implementation for receive RPC handling for both driver and executors
   val receiveListener = new RdmaCompletionListener {
@@ -263,14 +270,21 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
         })
     }
 
+    // Allocating buffer for table storing map task output (#maps * (address, len, lkey))
+    val buffer = getRdmaBufferManager.get(numMaps * RdmaMapTaskOutput.MAP_ENTRY_SIZE)
+    logInfo(s"Allocating buffer for shuffleId: $shuffleId MapTask output" +
+      s" of size: ${buffer.getLength}")
+    shuffleIdToMapAddressBuffer.put(shuffleId, buffer)
+
     // BypassMergeSortShuffleWriter is not supported since it is package private
     if (SortShuffleManager.canUseSerializedShuffle(dependency)) {
       // Otherwise, try to buffer map outputs in a serialized form, since this is more efficient:
-      new SerializedShuffleHandle[K, V](
+      new RdmaSerializedShuffleHandle[K, V](buffer.getAddress, buffer.getLength, buffer.getLkey,
         shuffleId, numMaps, dependency.asInstanceOf[ShuffleDependency[K, V, V]])
     } else {
       // Otherwise, buffer map outputs in a deserialized form:
-      new BaseShuffleHandle(shuffleId, numMaps, dependency)
+      new RdmaBaseShuffleHandle(buffer.getAddress, buffer.getLength, buffer.getLkey,
+        shuffleId, numMaps, dependency)
     }
   }
 
@@ -322,6 +336,26 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     // RdmaNode can't be initialized in the c'tor for executors, so the first call will initialize
     startRdmaNodeIfMissing()
 
+    shuffleIdToDriverBufferInfo.putIfAbsent(handle.shuffleId, {
+      val baseShuffleHandle = handle.asInstanceOf[BaseShuffleHandle[K, _, C]]
+      if (handle.isInstanceOf[RdmaBaseShuffleHandle[_, _, _]]) {
+        val rdmaBaseShuffleHandle = baseShuffleHandle.asInstanceOf[RdmaBaseShuffleHandle[K, _, C]]
+        BufferInfo(
+          rdmaBaseShuffleHandle.driverTableAddress,
+          rdmaBaseShuffleHandle.driverTableLength,
+          rdmaBaseShuffleHandle.driverTableRKey
+        )
+      } else {
+        val rdmaSerializedShuffle =
+          baseShuffleHandle.asInstanceOf[RdmaSerializedShuffleHandle[K, C]]
+        BufferInfo(
+          rdmaSerializedShuffle.driverTableAddress,
+          rdmaSerializedShuffle.driverTableLength,
+          rdmaSerializedShuffle.driverTableRKey
+        )
+      }
+    })
+
     new RdmaShuffleReader(handle.asInstanceOf[BaseShuffleHandle[K, _, C]], startPartition,
       endPartition, context)
   }
@@ -330,8 +364,25 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       : ShuffleWriter[K, V] = {
     // RdmaNode can't be initialized in the c'tor for executors, so the first call will initialize
     startRdmaNodeIfMissing()
-
     val baseShuffleHandle = handle.asInstanceOf[BaseShuffleHandle[K, V, _]]
+    shuffleIdToDriverBufferInfo.putIfAbsent(handle.shuffleId, {
+      if (handle.isInstanceOf[RdmaBaseShuffleHandle[_, _, _]]) {
+        val rdmaBaseShuffleHandle = baseShuffleHandle.asInstanceOf[RdmaBaseShuffleHandle[K, V, _]]
+        BufferInfo(
+          rdmaBaseShuffleHandle.driverTableAddress,
+          rdmaBaseShuffleHandle.driverTableLength,
+          rdmaBaseShuffleHandle.driverTableRKey
+        )
+      } else {
+        val rdmaSerializedShuffle =
+          baseShuffleHandle.asInstanceOf[RdmaSerializedShuffleHandle[K, V]]
+        BufferInfo(
+          rdmaSerializedShuffle.driverTableAddress,
+          rdmaSerializedShuffle.driverTableLength,
+          rdmaSerializedShuffle.driverTableRKey
+        )
+      }
+    })
     // registerShuffle() is only called on the driver, so we let the first caller of getWriter() to
     // initialize the structures for a new ShuffleId
     shuffleBlockResolver.newShuffleWriter(baseShuffleHandle)
@@ -342,6 +393,8 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   override def unregisterShuffle(shuffleId: Int): Boolean = {
     mapTaskOutputsByBlockManagerId.foreach(_._2.remove(shuffleId))
     shuffleBlockResolver.removeShuffle(shuffleId)
+    shuffleIdToMapAddressBuffer.remove(shuffleId).map(_.free())
+    shuffleIdToDriverBufferInfo.remove(shuffleId)
     true
   }
 
@@ -385,4 +438,14 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
 
   def removeFetchMapStatusCallback(callbackId: Int): Unit = fetchMapStatusCallbackMap.remove(
     callbackId)
+}
+
+object RdmaShuffleManager{
+  type ShuffleId = Int
+  type MapId = Int
+
+  // Information needed to do RDMA read of remote buffer
+  case class BufferInfo(address: Long, length: Int, rKey: Int) {
+    require(length >= 0)
+  }
 }

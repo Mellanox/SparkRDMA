@@ -25,6 +25,8 @@ import org.apache.spark.internal.Logging
 
 object RdmaMapTaskOutput {
   private[rdma] val ENTRY_SIZE = 8 + 4 + 4
+  // Only address and key. For map output we don't need a length
+  private[rdma] val MAP_ENTRY_SIZE = 8 + 4
 }
 
 class RdmaMapTaskOutput private[rdma](
