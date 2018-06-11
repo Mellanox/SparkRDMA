@@ -17,9 +17,6 @@
 package org.apache.spark.shuffle.rdma
 
 import java.nio.ByteBuffer
-import java.util.concurrent.atomic.AtomicInteger
-
-import scala.concurrent.{Future, Promise}
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
@@ -41,15 +38,11 @@ class RdmaMapTaskOutput private[rdma](
   private[rdma] def getNumPartitions: Int = lastPartitionId - startPartitionId + 1
   private[rdma] def size: Int = getNumPartitions * ENTRY_SIZE
 
-  final private val fillCount = new AtomicInteger(getNumPartitions)
   final private val bufferManager = SparkEnv.get.shuffleManager.asInstanceOf[RdmaShuffleManager]
     .getRdmaBufferManager
   final private val rdmaBuffer = bufferManager.get(size)
   def getRdmaBuffer: RdmaBuffer = rdmaBuffer
   final private val byteBuffer = rdmaBuffer.getByteBuffer
-
-  final private val fillPromise = Promise[Unit]
-  final val fillFuture: Future[Unit] = fillPromise.future
 
   private[rdma] def getRdmaBlockLocation(requestedId: Int) = {
     if (requestedId < startPartitionId || requestedId > lastPartitionId) {
@@ -87,26 +80,5 @@ class RdmaMapTaskOutput private[rdma](
         startPartitionId + "-" + lastPartitionId + ")")
     }
     putInternal(requestedId, address, length, mKey)
-    if (fillCount.decrementAndGet == 0) {
-      fillPromise.trySuccess()
-    }
-  }
-
-  private[rdma] def putRange(firstRequestedId: Int, lastRequestedId: Int, buf: ByteBuffer) = {
-    if (firstRequestedId < startPartitionId ||
-        lastRequestedId > lastPartitionId ||
-        firstRequestedId > lastRequestedId) {
-      throw new IndexOutOfBoundsException("StartPartitionId " + firstRequestedId +
-        ", LastPartitionId " + lastRequestedId + " are out of range (" + startPartitionId +
-        "-" + lastPartitionId + ")")
-    }
-
-    for (partId <- firstRequestedId to lastRequestedId) {
-      putInternal(partId, buf.getLong, buf.getInt, buf.getInt)
-    }
-
-    if (fillCount.addAndGet(-(lastRequestedId - firstRequestedId + 1)) == 0) {
-      fillPromise.trySuccess()
-    }
   }
 }

@@ -23,13 +23,12 @@ import java.util.concurrent.ConcurrentHashMap
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.shuffle.{BaseShuffleHandle, IndexShuffleBlockResolver}
-import org.apache.spark.shuffle.rdma.writer.RdmaShuffleData
 import org.apache.spark.shuffle.rdma.writer.wrapper.RdmaWrapperShuffleData
 import org.apache.spark.storage.ShuffleBlockId
 
 class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
     extends IndexShuffleBlockResolver(rdmaShuffleManager.conf) with Logging {
-  private val rdmaShuffleDataMap = new ConcurrentHashMap[Int, RdmaShuffleData]
+  private val rdmaShuffleDataMap = new ConcurrentHashMap[Int, RdmaWrapperShuffleData]
 
   def newShuffleWriter[K, V](baseShuffleHandle: BaseShuffleHandle[K, V, _]): Unit = synchronized {
     val shuffleId = baseShuffleHandle.shuffleId
@@ -45,12 +44,13 @@ class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
 
   def removeShuffle(shuffleId: Int): Unit = {
     rdmaShuffleDataMap.remove(shuffleId) match {
-      case r: RdmaShuffleData => r.dispose()
+      case r: RdmaWrapperShuffleData => r.dispose()
       case null =>
     }
   }
 
-  def getRdmaShuffleData(shuffleId: ShuffleId): RdmaShuffleData = rdmaShuffleDataMap.get(shuffleId)
+  def getRdmaShuffleData(shuffleId: ShuffleId): RdmaWrapperShuffleData =
+    rdmaShuffleDataMap.get(shuffleId)
 
   override def removeDataByMap(shuffleId: Int, mapId: Int): Unit = {
     getRdmaShuffleData(shuffleId).removeDataByMap(mapId)
@@ -72,7 +72,7 @@ class RdmaShuffleBlockResolver(rdmaShuffleManager: RdmaShuffleManager)
 
   def getLocalRdmaPartition(shuffleId: Int, partitionId : Int) : Seq[InputStream] = {
     rdmaShuffleDataMap.get(shuffleId) match {
-      case r: RdmaShuffleData => r.getInputStreams(partitionId)
+      case r: RdmaWrapperShuffleData => r.getInputStreams(partitionId)
       case null => Seq.empty
     }
   }

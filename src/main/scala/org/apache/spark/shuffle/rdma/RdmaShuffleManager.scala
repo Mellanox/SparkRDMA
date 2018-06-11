@@ -20,10 +20,8 @@ package org.apache.spark.shuffle.rdma
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.JavaConverters._
-import scala.collection.concurrent
 import scala.concurrent.{Future, Promise}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.util.{Failure, Success}
@@ -56,9 +54,6 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
   private val shuffleIdToBufferAddress = new ConcurrentHashMap[ShuffleId, RdmaBuffer]().asScala
 
   // Used by executor only
-  private val fetchMapStatusCallbackMap =
-    new ConcurrentHashMap[Integer, (Int, RdmaShuffleManagerId, Seq[RdmaBlockLocation]) => Unit]
-  private val fetchMapStatusCallbackIndex = new AtomicInteger(0)
   val rdmaShuffleReaderStats: RdmaShuffleReaderStats = {
     if (rdmaShuffleConf.collectShuffleReaderStats) {
       new RdmaShuffleReaderStats(rdmaShuffleConf)
@@ -129,113 +124,6 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
                 rdmaShuffleManagerId)
               Future { getRdmaChannel(rdmaShuffleManagerId, mustRetry = false) }
           }
-
-        case publishMsg: RdmaPublishMapTaskOutputRpcMsg =>
-          // Executors use this message to publish their RDMA MapTaskOutputs to the driver, so that
-          // the driver can later provide the information to executors on-demand
-          assume(isDriver)
-          val shuffleIdsMap = mapTaskOutputsByBlockManagerId.getOrElse(publishMsg.blockManagerId, {
-            val newShuffleIdMap = new ConcurrentHashMap[Int,
-              scala.collection.concurrent.Map[Int, RdmaMapTaskOutput]]().asScala
-            mapTaskOutputsByBlockManagerId.putIfAbsent(publishMsg.blockManagerId,
-              newShuffleIdMap).getOrElse(newShuffleIdMap)
-          })
-          val mapIdsMap = shuffleIdsMap.getOrElse(publishMsg.shuffleId, {
-            val newMapIdsMap = new ConcurrentHashMap[Int, RdmaMapTaskOutput]().asScala
-            shuffleIdsMap.putIfAbsent(publishMsg.shuffleId, newMapIdsMap).getOrElse(newMapIdsMap)
-          })
-          val rdmaMapTaskOutput = mapIdsMap.getOrElse(publishMsg.mapId, {
-            val newRdmaMapTaskOutput = new RdmaMapTaskOutput(0, publishMsg.totalNumPartitions - 1)
-            mapIdsMap.putIfAbsent(publishMsg.mapId, newRdmaMapTaskOutput).getOrElse(
-              newRdmaMapTaskOutput)
-          })
-          rdmaMapTaskOutput.putRange(publishMsg.firstReduceId, publishMsg.lastReduceId,
-            publishMsg.rdmaMapTaskOutput.getByteBuffer(publishMsg.firstReduceId,
-              publishMsg.lastReduceId))
-
-        case fetchMapStatusMsg: RdmaFetchMapStatusRpcMsg =>
-          // Used by executors to ask the driver to translate MapStatus (shuffle block locations)
-          // into their RDMA block locations, so that RDMA_READ can be used to read the data from
-          // mappers
-          assume(isDriver)
-
-          // Locate MapTaskOutputs for the requested BlockManagerId and ShuffleId
-          val mapIdsToMapTaskOutputMap: Option[concurrent.Map[Int, RdmaMapTaskOutput]] = try {
-            Some(mapTaskOutputsByBlockManagerId(fetchMapStatusMsg.requestedBlockManagerId)(
-              fetchMapStatusMsg.shuffleId))
-          } catch {
-            case _: NoSuchElementException =>
-              logError("Unable to locate metadata for " +
-                fetchMapStatusMsg.requestedBlockManagerId + " ShuffleId: " +
-                fetchMapStatusMsg.shuffleId)
-              None
-          }
-
-          // Extract the futures for the requested MapIds, so that we can wait for them to complete
-          // once their MapTaskOutputs are ready
-          val futures: Seq[Future[Unit]] = mapIdsToMapTaskOutputMap match {
-            case Some(mapIds) =>
-              try {
-                fetchMapStatusMsg.mapIdReduceIds.map { case (mapId, _) => mapIds(mapId).fillFuture }
-              } catch {
-                case _: NoSuchElementException =>
-                  logError("Unable to locate metadata for " +
-                    fetchMapStatusMsg.requestedBlockManagerId + " ShuffleId: " +
-                    fetchMapStatusMsg.shuffleId)
-                  Seq.empty
-              }
-            case None =>
-              Seq.empty
-          }
-
-          // Once the futures complete, collect the RdmaBlockLocations and respond back
-          Future.sequence(futures).onSuccess { case _ =>
-            blockManagerIdToRdmaShuffleManagerId.get(
-                fetchMapStatusMsg.requestedBlockManagerId) match {
-              case Some(requestedRdmaShuffleManagerId) =>
-                val rdmaBlockLocations = fetchMapStatusMsg.mapIdReduceIds.map {
-                  case (mapId, reduceId) =>
-                    mapIdsToMapTaskOutputMap.get(mapId).getRdmaBlockLocation(reduceId)
-                }
-
-                // TODO: Modify response to use 16 bytes segments instead of objects
-                val buffers = new RdmaFetchMapStatusResponseRpcMsg(fetchMapStatusMsg.callbackId,
-                  requestedRdmaShuffleManagerId, rdmaBlockLocations).toRdmaByteBufferManagedBuffers(
-                    getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
-
-                val listener = new RdmaCompletionListener {
-                  override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-                  override def onFailure(e: Throwable): Unit = {
-                    buffers.foreach(_.release())
-                    logError("Failed to send RdmaFetchMapStatusResponseRpcMsg to " +
-                      fetchMapStatusMsg.requestingRdmaShuffleManagerId + ", Exception: " + e)
-                  }
-                }
-
-                val rdmaChannel = getRdmaChannel(fetchMapStatusMsg.requestingRdmaShuffleManagerId,
-                  mustRetry = true)
-                try {
-                  rdmaChannel.rdmaSendInQueue(listener, buffers.map(_.getAddress),
-                    buffers.map(_.getLkey), buffers.map(_.getLength.toInt))
-                } catch {
-                  case e: Exception =>
-                    listener.onFailure(e)
-                    throw e
-                }
-
-              case None => logError("Failed to find the RdmaShuffleManagerId for: " +
-                fetchMapStatusMsg.requestedBlockManagerId + ", failing silently")
-            }
-          }
-
-        case fetchMapStatusResponseMsg: RdmaFetchMapStatusResponseRpcMsg =>
-          // Used by the driver to respond to RdmaFetchMapStatusRpcMsg sent by executors
-          assume(!isDriver)
-          fetchMapStatusCallbackMap.get(fetchMapStatusResponseMsg.callbackId).apply(
-            fetchMapStatusResponseMsg.callbackId,
-            fetchMapStatusResponseMsg.requestedRdmaShuffleManagerId,
-            fetchMapStatusResponseMsg.rdmaBlockLocations)
-
         case _ => logWarning("Receive RdmaCompletionListener encountered an unidentified RPC")
       }
     }
@@ -517,17 +405,6 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     }
     result.future
   }
-
-  def putFetchMapStatusCallback(
-      callback: (Int, RdmaShuffleManagerId, Seq[RdmaBlockLocation]) => Unit): Int = {
-    val callbackId = fetchMapStatusCallbackIndex.getAndIncrement
-    val ret = fetchMapStatusCallbackMap.put(callbackId, callback)
-    if (ret != null) throw new RuntimeException("Overflow of FetchMapStatusCallbacks")
-    callbackId
-  }
-
-  def removeFetchMapStatusCallback(callbackId: Int): Unit = fetchMapStatusCallbackMap.remove(
-    callbackId)
 }
 
 object RdmaShuffleManager{
