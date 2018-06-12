@@ -202,7 +202,7 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     // Establish a connection to the driver in the background
     if (shouldSendHelloMsg) {
       Future {
-        getRdmaChannelToDriver(mustRetry = false)
+        getRdmaChannelToDriver(mustRetry = true)
       }.onSuccess { case rdmaChannel =>
         val buffers = new RdmaShuffleManagerHelloRpcMsg(localRdmaShuffleManagerId.get).
           toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
