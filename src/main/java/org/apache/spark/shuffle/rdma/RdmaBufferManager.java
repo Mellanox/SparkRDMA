@@ -19,7 +19,9 @@ package org.apache.spark.shuffle.rdma;
 
 import java.io.IOException;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -95,6 +97,7 @@ public class RdmaBufferManager {
   private static final int MIN_BLOCK_SIZE = 16 * 1024;
 
   private final int minimumAllocationSize;
+  private final AtomicBoolean startedCleanStacks = new AtomicBoolean(false);
   private final ConcurrentHashMap<Integer, AllocatorStack> allocStackMap =
     new ConcurrentHashMap<>();
   private IbvPd pd;
@@ -150,7 +153,6 @@ public class RdmaBufferManager {
       length |= length >> 16;
       length++;
     }
-
     return getOrCreateAllocatorStack(length).get();
   }
 
@@ -160,38 +162,48 @@ public class RdmaBufferManager {
       buf.free();
     } else {
       allocatorStack.put(buf);
-      FutureTask<Void> cleaner = new FutureTask<>(() -> {
-        // Check the size of current idling buffers
-        long idleBuffersSize = allocStackMap
-          .reduceValuesToLong(100L, allocStack -> allocStack.idleBuffersSize.get(), 0L, Long::sum);
-        // If it reached out 90% of idle buffer capacity, clean old stacks
-        if (idleBuffersSize > maxCacheSize * 0.90) {
-          cleanLRUStacks(idleBuffersSize);
-        }
-        return null;
-      });
-      globalScalaExecutor.execute(cleaner);
+      if (startedCleanStacks.compareAndSet(false, true)) {
+        FutureTask<Void> cleaner = new FutureTask<>(() -> {
+          // Check the size of current idling buffers
+          long idleBuffersSize = allocStackMap
+              .reduceValuesToLong(100L, allocStack -> allocStack.idleBuffersSize.get(),
+                  0L, Long::sum);
+          // If it reached out 90% of idle buffer capacity, clean old stacks
+          if (idleBuffersSize > maxCacheSize * 0.90) {
+            cleanLRUStacks(idleBuffersSize);
+          } else {
+            startedCleanStacks.compareAndSet(true, false);
+          }
+          return null;
+        });
+        globalScalaExecutor.execute(cleaner);
+      }
     }
   }
 
   private void cleanLRUStacks(long idleBuffersSize) {
     logger.debug("Current idle buffer size {}KB exceed 90% of maxCacheSize {}KB." +
         " Cleaning LRU idle stacks", idleBuffersSize / 1024, maxCacheSize / 1024);
-    AllocatorStack lruStack = allocStackMap.values().stream()
-      .sorted(Comparator.comparingLong(s -> s.lastAccess)).iterator().next();
     long totalCleaned = 0;
     // Will clean up to 65% of capacity
-    long needToClean = idleBuffersSize - (long) (maxCacheSize * 0.65);
-    while (!lruStack.stack.isEmpty() && totalCleaned < needToClean) {
-      RdmaBuffer rdmaBuffer = lruStack.stack.pollFirst();
-      if (rdmaBuffer != null) {
-        rdmaBuffer.free();
-        totalCleaned += lruStack.length;
-        lruStack.idleBuffersSize.addAndGet(-lruStack.length);
+    long needToClean = idleBuffersSize - (long)(maxCacheSize * 0.65);
+    Iterator<AllocatorStack> stacks = allocStackMap.values().stream()
+      .filter(s -> !s.stack.isEmpty())
+      .sorted(Comparator.comparingLong(s -> s.lastAccess)).iterator();
+    while (stacks.hasNext()) {
+      AllocatorStack lruStack = stacks.next();
+      while (!lruStack.stack.isEmpty() && totalCleaned < needToClean) {
+        RdmaBuffer rdmaBuffer = lruStack.stack.pollFirst();
+        if (rdmaBuffer != null) {
+          rdmaBuffer.free();
+          totalCleaned += lruStack.length;
+          lruStack.idleBuffersSize.addAndGet(-lruStack.length);
+        }
       }
+      logger.debug("Cleaned {} KB of idle stacks of size {} KB",
+          totalCleaned / 1024, lruStack.length / 1024);
     }
-    logger.debug("Cleaned {} KB of idle stacks of size {} KB",
-      totalCleaned / 1024, lruStack.length / 1024);
+    startedCleanStacks.compareAndSet(true, false);
   }
 
   IbvPd getPd() { return this.pd; }
