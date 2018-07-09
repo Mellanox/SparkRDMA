@@ -43,6 +43,7 @@ public class RdmaMappedFile {
   private IbvMr odpMr;
 
   private final RdmaMapTaskOutput rdmaMapTaskOutput;
+
   public RdmaMapTaskOutput getRdmaMapTaskOutput() { return rdmaMapTaskOutput; }
 
   private class RdmaFileMapping {
@@ -68,7 +69,7 @@ public class RdmaMappedFile {
       mmap.setAccessible(true);
       unmmap = FileChannelImpl.class.getDeclaredMethod("unmap0", long.class, long.class);
       unmmap.setAccessible(true);
-    } catch (Exception e){
+    } catch (Exception e) {
       throw new RuntimeException(e);
     }
   }

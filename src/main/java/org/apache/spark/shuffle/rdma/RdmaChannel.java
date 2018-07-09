@@ -61,6 +61,8 @@ public class RdmaChannel {
   private int localRecvCreditsPendingReport = 0;
 
   private Semaphore sendBudgetSemaphore;
+  private final ConcurrentLinkedDeque<PendingSend> sendWrQueue = new ConcurrentLinkedDeque<>();
+
   private class PendingSend {
     final LinkedList<IbvSendWR> ibvSendWRList;
     final int recvCreditsNeeded;
@@ -70,7 +72,6 @@ public class RdmaChannel {
       this.recvCreditsNeeded = recvCreditsNeeded;
     }
   }
-  private final ConcurrentLinkedDeque<PendingSend> sendWrQueue = new ConcurrentLinkedDeque<>();
 
   private class PostRecvWr {
     final IbvRecvWR ibvRecvWR;
@@ -83,6 +84,7 @@ public class RdmaChannel {
       this.buf = rdmaBuf.getByteBuffer();
     }
   }
+
   private PostRecvWr[] postRecvWrArray = null;
 
   private int ackCounter = 0;
@@ -360,12 +362,12 @@ public class RdmaChannel {
     }
   }
 
-  @SuppressWarnings("checkstyle:EmptyCatchBlock")
+  @SuppressWarnings({"checkstyle:EmptyCatchBlock"})
   void waitForActiveConnection() {
     synchronized (rdmaChannelState) {
       try {
         rdmaChannelState.wait(100);
-      } catch (InterruptedException ignored) {}
+      } catch (InterruptedException ignored) { }
     }
   }
 

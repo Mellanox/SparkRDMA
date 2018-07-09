@@ -82,7 +82,7 @@ class RdmaNode {
         bindPort = bindPort != 0 ? bindPort + 1 : 0;
       }
 
-      if (err != 0 || listenerRdmaCmId.getVerbs() == null){
+      if (err != 0 || listenerRdmaCmId.getVerbs() == null) {
         throw new IOException("Failed to bind. Make sure your NIC supports RDMA");
       }
 
@@ -379,7 +379,7 @@ class RdmaNode {
         futureTask.get(conf.teardownListenTimeout(), TimeUnit.MILLISECONDS);
       } catch (TimeoutException e) {
         logger.error("Failed to stop RdmaChannel during " + conf.teardownListenTimeout() + " ms");
-      } catch (Exception ex){
+      } catch (Exception ex) {
         logger.error(ex.toString());
       }
     }
@@ -399,7 +399,7 @@ class RdmaNode {
         futureTask.get(conf.teardownListenTimeout(), TimeUnit.MILLISECONDS);
       } catch (TimeoutException e) {
         logger.error("Failed to stop RdmaChannel during " + conf.teardownListenTimeout() + " ms");
-      } catch (Exception ex){
+      } catch (Exception ex) {
         logger.error(ex.toString());
       }
     }
