@@ -197,7 +197,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
       if (totalRemainingLocations.get() == 0) {
         // No RdmaBlockLocations are expected. Kick off the the dummy result
         // so that the iterator can quit if there are no more pending blocks
-        return insertDummyResult()
+        insertDummyResult()
       }
 
       groupedBlocksByAddress.foreach { case (blockManagerId, blocks) =>
