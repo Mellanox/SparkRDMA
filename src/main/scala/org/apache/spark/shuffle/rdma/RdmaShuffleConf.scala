@@ -99,8 +99,22 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
     "shuffleReadBlockSize", "256k", "0", "512m")
   lazy val maxBytesInFlight: Long = getRdmaConfSizeAsBytesInRange(
     "maxBytesInFlight", "48m", "128k", "100g")
-  lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "1k", "1g")
-  lazy val maxAggPrealloc: Long = getRdmaConfSizeAsBytesInRange("maxAggPrealloc", "0", "0", "10g")
+
+  // Comma separated list of buffer size : buffer count pairs. E.g. 4k:1000,16k:500
+  lazy val preAllocateBuffers: Map[Int, Int] = {
+    val bufferMap = getRdmaConfKey("preAllocateBuffers", "")
+      .split(",").withFilter(s => !s.isEmpty)
+      .map(entry => entry.split(":") match {
+      case Array(bufferSize, bufferCount) =>
+        (Utils.byteStringAsBytes(bufferSize.trim).toInt, bufferCount.toInt)
+    }).toMap
+    if (bufferMap.keys.sum >= maxBufferAllocationSize) {
+      throw new Exception("Total pre allocation buffer size >= " +
+        "spark.shuffle.rdma.maxBufferAllocationSize")
+    }
+    bufferMap
+  }
+
   // Remote fetch block statistics
   lazy val collectShuffleReaderStats: Boolean = conf.getBoolean(
     toRdmaConfKey("collectShuffleReaderStats"),

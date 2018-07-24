@@ -33,7 +33,6 @@ import org.slf4j.LoggerFactory;
 import scala.concurrent.ExecutionContext;
 import scala.concurrent.ExecutionContextExecutor;
 
-
 public class RdmaBufferManager {
   private class AllocatorStack {
     private final AtomicInteger totalAlloc = new AtomicInteger(0);
@@ -75,7 +74,6 @@ public class RdmaBufferManager {
     }
 
     private void preallocate(int numBuffers) throws IOException {
-      logger.debug("Pre allocating {} buffer of size {} KB", numBuffers, length / 1024);
       RdmaBuffer[] preAllocatedBuffers = RdmaBuffer.preAllocate(getPd(), length, numBuffers);
       for (int i = 0; i < numBuffers; i++) {
         put(preAllocatedBuffers[i]);
@@ -118,16 +116,23 @@ public class RdmaBufferManager {
       this.odpMr = sMr.getMr();
       sMr.free();
     }
-
-    int aggBlockPrealloc = (int)(conf.maxAggPrealloc() / conf.maxAggBlock());
-    if (aggBlockPrealloc > 0 && isExecutor) {
-      AllocatorStack allocatorStack = getOrCreateAllocatorStack((int)conf.maxAggBlock());
-      allocatorStack.preallocate(aggBlockPrealloc);
-    }
   }
 
-  public void preAllocate(int length, int numBuffers) throws IOException {
-    getOrCreateAllocatorStack(length).preallocate(numBuffers);
+  /**
+   * Pre allocates specified number of buffers of particular size in a single MR.
+   * @throws IOException
+   */
+  public void preAllocate(int buffSize, int buffCount) throws IOException {
+    long totalSize = ((long) buffCount) * buffSize;
+    // Disni uses int for length, so we can only allocate and register up to 2GB in a single call
+    if (totalSize > (Integer.MAX_VALUE - 1)) {
+      int numAllocs = (int)(totalSize / Integer.MAX_VALUE) + 1;
+      for (int i = 0; i < numAllocs; i++) {
+        getOrCreateAllocatorStack(buffSize).preallocate(buffCount / numAllocs);
+      }
+    } else {
+      getOrCreateAllocatorStack(buffSize).preallocate(buffCount);
+    }
   }
 
   private AllocatorStack getOrCreateAllocatorStack(int length) {

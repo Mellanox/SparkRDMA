@@ -222,6 +222,10 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
           case e: Exception => listener.onFailure(e)
         }
       }
+      // Pre allocate buffers in parallel outside of synchronized block to avoid thread contention
+      rdmaShuffleConf.preAllocateBuffers.par.foreach{
+        case (buffSize, buffCount) => getRdmaBufferManager.preAllocate(buffSize, buffCount)
+      }
     }
   }
 
