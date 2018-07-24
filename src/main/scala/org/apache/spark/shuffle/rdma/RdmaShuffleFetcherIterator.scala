@@ -229,7 +229,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
             val executorRdmaReadBlockLocationListener = new RdmaCompletionListener {
               override def onSuccess(buf: ByteBuffer): Unit = {
                 // 3. Finally we have RdmaBlockLocation for this mapId/reduceId. Let's fetch it.
-                logInfo(s"RDMA read ${shuffleBlocksCount} block locations " +
+                logTrace(s"RDMA read ${shuffleBlocksCount} block locations " +
                   s"from ${requestedRdmaShuffleManagerId.blockManagerId} took: " +
                   s"${Utils.getUsedTimeMs(startTime)}")
                 val blockLocationBuffer = localBlockLocationBuffer.getByteBuffer
