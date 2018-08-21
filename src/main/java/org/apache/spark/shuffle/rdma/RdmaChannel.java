@@ -40,6 +40,9 @@ public class RdmaChannel {
   private static final AtomicInteger idGenerator = new AtomicInteger(0);
   private final int id = idGenerator.getAndIncrement();
 
+  private final ConcurrentHashMap<Integer, ConcurrentLinkedDeque<SVCPostSend>> svcPostSendCache =
+    new ConcurrentHashMap();
+
   enum RdmaChannelType { RPC_REQUESTOR, RPC_RESPONDER, RDMA_READ_REQUESTOR, RDMA_READ_RESPONDER }
   private final RdmaChannelType rdmaChannelType;
 
@@ -376,9 +379,51 @@ public class RdmaChannel {
       throw new IOException("QP is in error state, can't post new requests");
     }
 
-    SVCPostSend sendSVCPostSend = qp.postSend(sendWRList, null);
-    sendSVCPostSend.execute();
-    sendSVCPostSend.free();
+    ConcurrentLinkedDeque<SVCPostSend> stack;
+    SVCPostSend svcPostSendObject;
+
+    int numWrElements = sendWRList.size();
+    // Special case for 0 sgeElements when rdmaSendWithImm
+    if (sendWRList.size() == 1 && sendWRList.getFirst().getNum_sge() == 0) {
+      numWrElements = NOOP_RESERVED_INDEX;
+    }
+
+    stack = svcPostSendCache.computeIfAbsent(numWrElements,
+      numElements -> new ConcurrentLinkedDeque<>());
+
+    // To avoid buffer allocations in disni update cached SVCPostSendObject
+    if (sendWRList.getFirst().getOpcode() == IbvSendWR.IbvWrOcode.IBV_WR_RDMA_READ.ordinal()
+        && (svcPostSendObject = stack.pollFirst()) != null) {
+      int i = 0;
+      for (IbvSendWR sendWr: sendWRList) {
+        SVCPostSend.SendWRMod sendWrMod = svcPostSendObject.getWrMod(i);
+
+        sendWrMod.setWr_id(sendWr.getWr_id());
+        sendWrMod.setSend_flags(sendWr.getSend_flags());
+        // Setting up RDMA attributes
+        sendWrMod.getRdmaMod().setRemote_addr(sendWr.getRdma().getRemote_addr());
+        sendWrMod.getRdmaMod().setRkey(sendWr.getRdma().getRkey());
+        sendWrMod.getRdmaMod().setReserved(sendWr.getRdma().getReserved());
+
+        if (sendWr.getNum_sge() == 1) {
+          IbvSge sge = sendWr.getSge(0);
+          sendWrMod.getSgeMod(0).setLkey(sge.getLkey());
+          sendWrMod.getSgeMod(0).setAddr(sge.getAddr());
+          sendWrMod.getSgeMod(0).setLength(sge.getLength());
+        }
+        i++;
+      }
+    } else {
+      svcPostSendObject = qp.postSend(sendWRList, null);
+    }
+
+    svcPostSendObject.execute();
+    // Cache SVCPostSend objects only for RDMA Read requests
+    if (sendWRList.getFirst().getOpcode() == IbvSendWR.IbvWrOcode.IBV_WR_RDMA_READ.ordinal()) {
+      stack.add(svcPostSendObject);
+    } else {
+      svcPostSendObject.free();
+    }
   }
 
   private void rdmaPostWRListInQueue(PendingSend pendingSend) throws IOException {
@@ -588,7 +633,6 @@ public class RdmaChannel {
         actualRecvWrList = zeroSizeRecvWrList.subList(0, count - cPosted);
         cCurrentPost = count - cPosted;
       }
-
       SVCPostRecv svcPostRecv = qp.postRecv(actualRecvWrList, null);
       svcPostRecv.execute();
       svcPostRecv.free();
@@ -608,6 +652,7 @@ public class RdmaChannel {
     }
 
     SVCPostRecv svcPostRecv = qp.postRecv(recvWrList, null);
+
     svcPostRecv.execute();
     svcPostRecv.free();
   }
