@@ -103,6 +103,7 @@ public class RdmaBufferManager {
   private long maxCacheSize;
   private static final ExecutionContextExecutor globalScalaExecutor =
     ExecutionContext.Implicits$.MODULE$.global();
+  private OdpStats odpStats = null;
 
   RdmaBufferManager(IbvPd pd, boolean isExecutor, RdmaShuffleConf conf) throws IOException {
     this.pd = pd;
@@ -114,6 +115,9 @@ public class RdmaBufferManager {
 
       SVCRegMr sMr = pd.regMr(0, -1, access).execute();
       this.odpMr = sMr.getMr();
+      if (conf.collectOdpStats()) {
+        odpStats = new OdpStats(conf);
+      }
       sMr.free();
     }
   }
@@ -228,6 +232,9 @@ public class RdmaBufferManager {
 
     if (odpMr != null) {
       odpMr.deregMr().execute().free();
+      if (odpStats != null) {
+        odpStats.printODPStatistics();
+      }
     }
   }
 }

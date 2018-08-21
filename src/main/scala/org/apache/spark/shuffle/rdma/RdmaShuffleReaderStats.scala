@@ -17,13 +17,13 @@
 
 package org.apache.spark.shuffle.rdma
 
-
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
-import org.slf4j.LoggerFactory
 import scala.collection.JavaConverters._
+import scala.io.Source
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.storage.BlockManagerId
 
 class RdmaRemoteFetchHistogram(numBuckets: Int, bucketSize: Int) {
@@ -49,8 +49,7 @@ class RdmaRemoteFetchHistogram(numBuckets: Int, bucketSize: Int) {
   }
 }
 
-class RdmaShuffleReaderStats(rdmaShuffleConf: RdmaShuffleConf) {
-  private val logger = LoggerFactory.getLogger(classOf[RdmaShuffleReaderStats])
+class RdmaShuffleReaderStats(rdmaShuffleConf: RdmaShuffleConf) extends Logging {
   private val remoteFetchHistogramMap =
     new ConcurrentHashMap[BlockManagerId, RdmaRemoteFetchHistogram]()
   private val globalHistogram = new RdmaRemoteFetchHistogram(rdmaShuffleConf.fetchTimeNumBuckets,
@@ -72,8 +71,26 @@ class RdmaShuffleReaderStats(rdmaShuffleConf: RdmaShuffleConf) {
 
   def printRemoteFetchHistogram(): Unit = {
     remoteFetchHistogramMap.asScala.foreach{ case (hostPort, histogram) =>
-      logger.info("Fetch blocks from " + hostPort.toString + ": " + histogram.getString)
+      logInfo("Fetch blocks from " + hostPort.toString + ": " + histogram.getString)
     }
-    logger.info("Total fetches from all remote hostPorts: " + globalHistogram.getString)
+    logInfo("Total fetches from all remote hostPorts: " + globalHistogram.getString)
+  }
+}
+
+class OdpStats(rdmaShuffleConf: RdmaShuffleConf) extends Logging {
+  private val statFsOdpFiles = Array("invalidations_faults_contentions", "num_invalidation_pages",
+    "num_invalidations", "num_page_fault_pages", "num_page_faults", "num_prefetches_handled",
+    "num_prefetch_pages")
+  private val sysFsFolder = s"/sys/class/infiniband_verbs/uverbs${rdmaShuffleConf.rdmaDeviceNum}/"
+  private val initialOdpStat = statFsOdpFiles.map(f => Source.fromFile(s"$sysFsFolder/$f")
+    .getLines().next().toLong)
+
+  def printODPStatistics(): Unit = {
+    val odpStats = statFsOdpFiles.map(f =>
+      Source.fromFile(s"$sysFsFolder/$f").getLines().next().toLong)
+    val diff = odpStats.zip(initialOdpStat).map{case (v1, v2) => v1 - v2}
+    diff.zip(statFsOdpFiles).foreach {
+      case (value, fname) => logInfo(s"$fname: ${value}")
+    }
   }
 }

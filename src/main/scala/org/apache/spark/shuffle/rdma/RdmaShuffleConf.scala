@@ -64,6 +64,8 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
   lazy val swFlowControl: Boolean = conf.getBoolean(toRdmaConfKey("swFlowControl"), true)
   lazy val maxBufferAllocationSize: Long = getRdmaConfSizeAsBytesInRange(
       "maxBufferAllocationSize", "10g", "0", "10t")
+  // Only required to collect ODP stats from sysfs
+  lazy val rdmaDeviceNum: Int = conf.getInt(toRdmaConfKey("device.num"), 0)
 
   def useOdp(context: IbvContext): Boolean = {
     conf.getBoolean(toRdmaConfKey("useOdp"), false) && {
@@ -124,7 +126,8 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
   lazy val fetchTimeBucketSizeInMs: Int = getRdmaConfIntInRange("fetchTimeBucketSizeInMs", 300, 5,
     60000)
   lazy val fetchTimeNumBuckets: Int = getRdmaConfIntInRange("fetchTimeNumBuckets", 5, 2, 100)
-
+  // ODP statistics
+  lazy val collectOdpStats: Boolean = conf.getBoolean(toRdmaConfKey("collectOdpStats"), true)
   //
   // Addressing and connection configuration
   //
