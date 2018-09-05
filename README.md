@@ -47,10 +47,10 @@ Please use the ["Releases"](https://github.com/Mellanox/SparkRDMA/releases) page
 <br>If you would like to build the project yourself, please refer to the ["Build"](https://github.com/Mellanox/SparkRDMA#build) section below.
 
 The pre-built binaries are packed as an archive that contains the following files:
-* spark-rdma-2.0-for-spark-2.0.0-jar-with-dependencies.jar
-* spark-rdma-2.0-for-spark-2.1.0-jar-with-dependencies.jar
-* spark-rdma-2.0-for-spark-2.2.0-jar-with-dependencies.jar
-* spark-rdma-2.0-for-spark-2.3.0-jar-with-dependencies.jar
+* spark-rdma-3.0-for-spark-2.0.0-jar-with-dependencies.jar
+* spark-rdma-3.0-for-spark-2.1.0-jar-with-dependencies.jar
+* spark-rdma-3.0-for-spark-2.2.0-jar-with-dependencies.jar
+* spark-rdma-3.0-for-spark-2.3.0-jar-with-dependencies.jar
 * libdisni.so
 
 libdisni.so **must** be in `java.library.path` on every Spark Master and Worker (usually in /usr/lib)
@@ -88,7 +88,7 @@ mvn -DskipTests clean package -Pspark-2.0.0
 ```
 git clone https://github.com/zrlio/disni.git
 cd disni
-git checkout tags/v1.4 -b v1.4
+git checkout tags/v1.7 -b v1.7
 ```
 
 4. Compile and install only libdisni (the jars are already included in the SparkRDMA plugin):
