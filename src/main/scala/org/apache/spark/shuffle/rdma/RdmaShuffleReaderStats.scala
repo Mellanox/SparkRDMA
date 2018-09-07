@@ -17,11 +17,14 @@
 
 package org.apache.spark.shuffle.rdma
 
+import java.io.File
+import java.nio.charset.Charset
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.collection.JavaConverters._
-import scala.io.Source
+
+import com.google.common.io.Files
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.storage.BlockManagerId
@@ -82,12 +85,12 @@ class OdpStats(rdmaShuffleConf: RdmaShuffleConf) extends Logging {
     "num_invalidations", "num_page_fault_pages", "num_page_faults", "num_prefetches_handled",
     "num_prefetch_pages")
   private val sysFsFolder = s"/sys/class/infiniband_verbs/uverbs${rdmaShuffleConf.rdmaDeviceNum}/"
-  private val initialOdpStat = statFsOdpFiles.map(f => Source.fromFile(s"$sysFsFolder/$f")
-    .getLines().next().toLong)
+  private val initialOdpStat = statFsOdpFiles.map(f =>
+    Files.readFirstLine(new File(s"$sysFsFolder/$f"), Charset.defaultCharset()).toLong)
 
   def printODPStatistics(): Unit = {
     val odpStats = statFsOdpFiles.map(f =>
-      Source.fromFile(s"$sysFsFolder/$f").getLines().next().toLong)
+      Files.readFirstLine(new File(s"$sysFsFolder/$f"), Charset.defaultCharset()).toLong)
     val diff = odpStats.zip(initialOdpStat).map{case (v1, v2) => v1 - v2}
     diff.zip(statFsOdpFiles).foreach {
       case (value, fname) => logInfo(s"$fname: ${value}")
