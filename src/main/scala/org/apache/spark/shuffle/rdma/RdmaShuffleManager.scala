@@ -150,8 +150,9 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
         rdmaNode.get.getLocalInetSocketAddress.getHostString,
         rdmaNode.get.getLocalInetSocketAddress.getPort,
         SparkEnv.get.blockManager.blockManagerId))
-
-      SparkContext.getOrCreate(conf).addSparkListener(
+      val sc = SparkContext.getOrCreate(conf)
+      require(!sc.isLocal, "SparkRDMA shuffle doesn't support local mode.")
+      sc.addSparkListener(
         new SparkListener {
           override def onBlockManagerRemoved(
               blockManagerRemoved: SparkListenerBlockManagerRemoved) {
