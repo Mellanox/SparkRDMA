@@ -19,14 +19,14 @@ package org.apache.spark.shuffle.rdma
 
 import java.io.InputStream
 import java.nio.ByteBuffer
-import java.util.Timer
-import java.util.concurrent.{ConcurrentLinkedDeque, LinkedBlockingQueue}
+import java.util.{Comparator, NoSuchElementException}
+import java.util.concurrent.{LinkedBlockingQueue, PriorityBlockingQueue}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
-import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable.ListBuffer
 import scala.concurrent._
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.util.{Failure, Success}
 
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
@@ -34,7 +34,6 @@ import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.shuffle.{FetchFailedException, MetadataFetchFailedException}
 import org.apache.spark.storage.{BlockId, BlockManagerId, ShuffleBlockId}
 import org.apache.spark.util.Utils
-
 
 private[spark] final class RdmaShuffleFetcherIterator(
     context: TaskContext,
@@ -71,13 +70,24 @@ private[spark] final class RdmaShuffleFetcherIterator(
     rdmaShuffleManagerId: RdmaShuffleManagerId,
     rdmaBlockLocations: Seq[RdmaBlockLocation],
     totalLength: Int)
-  private[this] val pendingFetchesQueue = new ConcurrentLinkedDeque[PendingFetch]()
+
+  val rand = new scala.util.Random(System.nanoTime())
+  // Make random ordering of pending fetches to prevent oversubscription to channel
+  private[this] val pendingFetchesQueue = new PriorityBlockingQueue[PendingFetch](100,
+    new Comparator[PendingFetch] {
+      override def compare(o1: PendingFetch, o2: PendingFetch): Int = -1 + rand.nextInt(3)
+    })
 
   private[this] val rdmaShuffleReaderStats = rdmaShuffleManager.rdmaShuffleReaderStats
+  private[this] val rdmaReadRequestsLimit = rdmaShuffleConf.sendQueueDepth /
+    rdmaShuffleConf.getConfKey("spark.executor.cores", "1").toInt
 
   initialize()
 
   private[this] def cleanup() {
+    logDebug(s"ShuffleId: $shuffleId, reduceId: ${context.partitionId()}\n" +
+            s"Number blocks processed: $numBlocksProcessed,\n" +
+            s"total fetch wait time: ${shuffleMetrics.fetchWaitTime}")
     isStopped = true
     currentResult match {
       case SuccessFetchResult(_, _, inputStream) if inputStream != null => inputStream.close()
@@ -143,14 +153,13 @@ private[spark] final class RdmaShuffleFetcherIterator(
               (System.currentTimeMillis() - startRemoteFetchTime).toInt)
           }
         logTrace(s"Got remote block(s): of size ${pendingFetch.totalLength} " +
-          s" start partition: $startPartition  from " +
-          s"${pendingFetch.rdmaShuffleManagerId.blockManagerId} " +
+          s"from ${pendingFetch.rdmaShuffleManagerId.blockManagerId} " +
           s"after ${Utils.getUsedTimeMs(startRemoteFetchTime)}")
       }
 
       override def onFailure(e: Throwable): Unit = {
-        logError("Failed to getRdmaBlockLocation block(s) from: " +
-          pendingFetch.rdmaShuffleManagerId.blockManagerId + ", Exception: " + e)
+        logError(s"Failed to getRdmaBlockLocation block(s) from: " +
+          s"${pendingFetch.rdmaShuffleManagerId.blockManagerId},\n Exception: $e")
         resultsQueue.put(FailureFetchResult(startPartition,
             pendingFetch.rdmaShuffleManagerId.blockManagerId, e))
 
@@ -172,141 +181,140 @@ private[spark] final class RdmaShuffleFetcherIterator(
   }
 
   private[this] def startAsyncRemoteFetches(): Unit = {
-    val startRemotePartitionLocationFetch = System.currentTimeMillis()
+    // 1. Get the whole MapTaskOutputAddressTable
+    rdmaShuffleManager.getMapTaskOutputTable(shuffleId).onComplete{
+      case Failure(ex) => resultsQueue.put(FailureMetadataFetchResult(
+        new MetadataFetchFailedException(shuffleId, context.partitionId(), ex.getMessage)))
+        logError(s"Failed to RDMA read MapTaskOutputAddressTable: $ex")
+      case Success(rdmaBuffer) =>
+      val mapTaskOutput = rdmaBuffer.getByteBuffer
+      val groupedBlocksByAddress = rand.shuffle(
+        blocksByAddress.filter(_._1 != localBlockManagerId).map {
+          case (blockManagerId, seq) => (blockManagerId, seq.filter(_._2 > 0))
+        }.filter(_._2.nonEmpty))
 
-    val groupedBlocksByAddress = blocksByAddress.filter(_._1 != localBlockManagerId).map {
-      case (blockManagerId, seq) => (blockManagerId, seq.filter(_._2 > 0))}.filter(_._2.nonEmpty)
-
-    val totalRemainingLocations = new AtomicInteger(groupedBlocksByAddress.map(_._2.length).sum)
-
-    if (totalRemainingLocations.get() > 0) {
-      def metadataFetchFailed(e: Throwable) = resultsQueue.put(FailureMetadataFetchResult(
-        new MetadataFetchFailedException(shuffleId, startPartition,
-          "Failed to fetch remote partition locations for ShuffleId: " + shuffleId +
-            " PartitionId: " + startPartition + " from driver: " + e)))
-
-      val timerTask = new java.util.TimerTask {
-        override def run(): Unit = metadataFetchFailed(new TimeoutException("Timed-out while " +
-          "fetching remote partition locations for ShuffleId: " + shuffleId + " PartitionIds: " +
-          (startPartition until endPartition).mkString(", ") + " from driver, consider " +
-          "increasing the value of spark.shuffle.rdma.partitionLocationFetchTimeout " +
-          "(current value: " + rdmaShuffleConf.partitionLocationFetchTimeout + ")"))
+      val totalRemainingLocations = new AtomicInteger(groupedBlocksByAddress.map(_._2.length).sum)
+      if (totalRemainingLocations.get() == 0) {
+        // No RdmaBlockLocations are expected. Kick off the the dummy result
+        // so that the iterator can quit if there are no more pending blocks
+        insertDummyResult()
       }
 
-      groupedBlocksByAddress.foreach { case (blockManagerId, blockIdSeq) =>
-        val remainingLocations = new AtomicInteger(blockIdSeq.length)
-        val resolvedLocationList = new ListBuffer[RdmaBlockLocation]
-
-        // Create a callback for handling FetchMapStatusResponse messages
-        val responseCallback = (callbackId: Int,
-            requestedRdmaShuffleManagerId: RdmaShuffleManagerId,
-            locations: Seq[RdmaBlockLocation]) => {
-          resolvedLocationList.synchronized { resolvedLocationList ++= locations }
-
-          if (remainingLocations.addAndGet(-locations.length) == 0) {
-            // Once all of the partitions locations are ready, map them into PendingFetches
-            logInfo(s"Fetching remote partition locations for ${blockManagerId.executorId}" +
-              s" took ${Utils.getUsedTimeMs(startRemotePartitionLocationFetch)}")
-            // Callback is no longer necessary, remove it
-            rdmaShuffleManager.removeFetchMapStatusCallback(callbackId)
-
-            // Build PendingFetches our of the RdmaBlockLocations
-            val allPendingFetches = {
-              val pendingFetches = new ListBuffer[PendingFetch]
-              var curRdmaBlockLocations = new ListBuffer[RdmaBlockLocation]
-              var totalLength: Int = 0
-
-              for (rdmaBlockLocation <- resolvedLocationList) {
-                // Group RdmaBlockLocations up to rdmaShuffleConf.shuffleReadBlockSize
-                if (totalLength + rdmaBlockLocation.length <=
-                    rdmaShuffleConf.shuffleReadBlockSize) {
-                  totalLength += rdmaBlockLocation.length
-                } else {
-                  if (totalLength > 0) {
-                    pendingFetches += PendingFetch(requestedRdmaShuffleManagerId,
-                      curRdmaBlockLocations, totalLength)
-                  }
-                  totalLength = rdmaBlockLocation.length
-                  curRdmaBlockLocations = new ListBuffer[RdmaBlockLocation]
-                }
-                curRdmaBlockLocations += rdmaBlockLocation
-              }
-              if (totalLength > 0) {
-                pendingFetches += PendingFetch(requestedRdmaShuffleManagerId, curRdmaBlockLocations,
-                  totalLength)
-              }
-
-              pendingFetches
-            }
-            for (pendingFetch <- allPendingFetches) {
-              numBlocksToFetch.addAndGet(pendingFetch.rdmaBlockLocations.length)
-
-              // Start the fetch if no more than rdmaShuffleConf.maxBytesInFlight are in progress
-              if (curBytesInFlight.get() < rdmaShuffleConf.maxBytesInFlight) {
-                curBytesInFlight.addAndGet(pendingFetch.totalLength)
-                Future { fetchBlocks(pendingFetch) }
-              } else {
-                pendingFetchesQueue.add(pendingFetch)
-              }
-            }
-          }
-
-          if (totalRemainingLocations.addAndGet(-locations.length) == 0) {
-            // Once all of the expected RdmaBlockLocations arrived, stop the timeout timer and kick
-            // off the the dummy result so that the iterator can quit if there are no more pending
-            // blocks
-            timerTask.cancel()
-            insertDummyResult()
-          }
-        }: Unit
-        val callbackId = rdmaShuffleManager.putFetchMapStatusCallback(responseCallback)
-
-        // Filter out non-shuffle blocks - they are unexpected
-        val mapIdReduceIds = blockIdSeq.filter(_._1.isShuffle).map(
-          _._1.asInstanceOf[ShuffleBlockId]).map( blockId => (blockId.mapId, blockId.reduceId))
-
-        val rdmaChannel = rdmaShuffleManager.getRdmaChannelToDriver(mustRetry = true)
+      groupedBlocksByAddress.foreach { case (blockManagerId, blocks) =>
+        var requestedRdmaShuffleManagerId: RdmaShuffleManagerId = null
         try {
-          val buffers = new RdmaFetchMapStatusRpcMsg(
-            rdmaShuffleManager.getLocalRdmaShuffleManagerId, blockManagerId, shuffleId, callbackId,
-            mapIdReduceIds).toRdmaByteBufferManagedBuffers(
-              rdmaShuffleManager.getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
-
-          val listener = new RdmaCompletionListener {
-            override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-            override def onFailure(e: Throwable): Unit = {
-              buffers.foreach(_.release())
-              logError("Failed to send RdmaFetchMapStatusRpcMsg to " + rdmaChannel + ":" +
-                ", Exception: " + e)
-            }
-          }
-
-          try {
-            rdmaChannel.rdmaSendInQueue(listener, buffers.map(_.getAddress), buffers.map(_.getLkey),
-              buffers.map(_.getLength.toInt))
-          } catch {
-            case e: Exception =>
-              listener.onFailure(e)
-              throw e
-          }
+          requestedRdmaShuffleManagerId =
+            rdmaShuffleManager.blockManagerIdToRdmaShuffleManagerId(blockManagerId)
         } catch {
-          case e: Exception =>
-            timerTask.cancel()
-            metadataFetchFailed(e)
+          case _: NoSuchElementException =>
+            val error = s"RdmaShuffleNode: ${localBlockManagerId} " +
+              s"has no RDMA connection to $blockManagerId"
+            logError(error)
+            resultsQueue.put(FailureMetadataFetchResult(
+              new MetadataFetchFailedException(shuffleId, context.partitionId(), error)))
+            return
+        }
+
+        blocks.grouped(rdmaReadRequestsLimit).foreach {
+          case blockIdSeq =>
+            // Filter out non-shuffle blocks - they are unexpected
+            val shuffleBlocks = blockIdSeq.withFilter(_._1.isShuffle).map(
+              _._1.asInstanceOf[ShuffleBlockId]).toArray
+            val shuffleBlocksCount = shuffleBlocks.size
+
+            val localBlockLocationBuffer = rdmaShuffleManager.getRdmaBufferManager.get(
+              RdmaMapTaskOutput.ENTRY_SIZE * shuffleBlocksCount)
+
+            val startTime = System.currentTimeMillis()
+            val executorRdmaReadBlockLocationListener = new RdmaCompletionListener {
+              override def onSuccess(buf: ByteBuffer): Unit = {
+                // 3. Finally we have RdmaBlockLocation for this mapId/reduceId. Let's fetch it.
+                logTrace(s"RDMA read ${shuffleBlocksCount} block locations " +
+                  s"from ${requestedRdmaShuffleManagerId.blockManagerId} took: " +
+                  s"${Utils.getUsedTimeMs(startTime)}")
+                val blockLocationBuffer = localBlockLocationBuffer.getByteBuffer
+                var totalLength = 0
+                var totalReadRequests = 0
+                var curRdmaBlockLocations = new ListBuffer[RdmaBlockLocation]
+                val pendingFetches = new ListBuffer[PendingFetch]
+                (0 until shuffleBlocksCount).foreach { _ =>
+                  val rdmaBlockLocation = RdmaBlockLocation(blockLocationBuffer.getLong(),
+                    blockLocationBuffer.getInt(), blockLocationBuffer.getInt())
+
+                  if (totalLength + rdmaBlockLocation.length <= rdmaShuffleConf.shuffleReadBlockSize
+                    && totalReadRequests < rdmaReadRequestsLimit) {
+                    totalLength += rdmaBlockLocation.length
+                    totalReadRequests += 1
+                  } else {
+                    if (totalLength > 0) {
+                      pendingFetches += PendingFetch(requestedRdmaShuffleManagerId,
+                        curRdmaBlockLocations, totalLength)
+                    }
+                    totalLength = rdmaBlockLocation.length
+                    totalReadRequests = 1
+                    curRdmaBlockLocations = new ListBuffer[RdmaBlockLocation]
+                  }
+                  curRdmaBlockLocations += rdmaBlockLocation
+                }
+                localBlockLocationBuffer.free()
+                if (totalLength > 0) {
+                  pendingFetches += PendingFetch(requestedRdmaShuffleManagerId,
+                    curRdmaBlockLocations, totalLength)
+                }
+                for (pendingFetch <- pendingFetches) {
+                  // Start fetch if no more than rdmaShuffleConf.maxBytesInFlight are in progress
+                  numBlocksToFetch.addAndGet(pendingFetch.rdmaBlockLocations.length)
+                  if (curBytesInFlight.get() < rdmaShuffleConf.maxBytesInFlight) {
+                    curBytesInFlight.addAndGet(pendingFetch.totalLength)
+                    Future { fetchBlocks(pendingFetch) }
+                  } else {
+                    pendingFetchesQueue.add(pendingFetch)
+                  }
+                }
+                if (totalRemainingLocations.addAndGet(-shuffleBlocksCount) == 0) {
+                  insertDummyResult()
+                }
+              }
+              override def onFailure(exception: Throwable): Unit = {
+                val mapOutputBuf = rdmaShuffleManager.shuffleIdToMapAddressBuffer
+                  .remove(shuffleId)
+                if (mapOutputBuf != null) {
+                  mapOutputBuf.map(_.free())
+                }
+                localBlockLocationBuffer.free()
+                resultsQueue.put(FailureMetadataFetchResult(
+                  new MetadataFetchFailedException(shuffleId, context.partitionId(),
+                    exception.getLocalizedMessage)))
+                logError(s"Failed to RDMA read ${shuffleBlocksCount} block locations " +
+                    s"from ${requestedRdmaShuffleManagerId.blockManagerId}: \n $exception")
+              }
+            }
+
+            val rAddresses = new Array[Long](shuffleBlocks.size)
+            val rSizes = Array.fill(shuffleBlocks.size)(RdmaMapTaskOutput.ENTRY_SIZE)
+            val rKeys = new Array[Int](shuffleBlocks.size)
+
+            shuffleBlocks.zipWithIndex.foreach {
+              case (shuffleBlock, i) =>
+                // 2.RDMA read from other executor MapTaskOutput portion itself for mapId-reduceID
+                val mapIdOffset = shuffleBlock.mapId * RdmaMapTaskOutput.MAP_ENTRY_SIZE
+                val reduceIdOffset = mapTaskOutput.getLong(mapIdOffset) +
+                  shuffleBlock.reduceId * RdmaMapTaskOutput.ENTRY_SIZE
+                rAddresses(i) = reduceIdOffset
+                rKeys(i) = mapTaskOutput.getInt(mapIdOffset + 8)
+            }
+            try {
+              val channelToExecutor =
+                rdmaShuffleManager.getRdmaChannel(requestedRdmaShuffleManagerId, true)
+              channelToExecutor.rdmaReadInQueue(executorRdmaReadBlockLocationListener,
+                localBlockLocationBuffer.getAddress, localBlockLocationBuffer.getLkey,
+                rSizes, rAddresses, rKeys)
+            } catch {
+              case ex: Exception =>
+                executorRdmaReadBlockLocationListener.onFailure(ex)
+            }
         }
       }
-
-      // Start the timeout timer once all messages are submitted
-      try {
-        new Timer(true).schedule(timerTask, rdmaShuffleConf.partitionLocationFetchTimeout)
-      } catch {
-        // Covers the case where timerTask was already cancelled, no further action is needed
-        case _: IllegalStateException =>
-      }
-    } else {
-      // No RdmaBlockLocations are expected. Kick off the the dummy result so that the iterator can
-      // quit if there are no more pending blocks
-      insertDummyResult()
     }
   }
 
@@ -357,7 +365,7 @@ private[spark] final class RdmaShuffleFetcherIterator(
     // Start some pending remote fetches
     while (!pendingFetchesQueue.isEmpty &&
         curBytesInFlight.get() < rdmaShuffleConf.maxBytesInFlight) {
-      pendingFetchesQueue.pollFirst() match {
+      pendingFetchesQueue.poll() match {
         case pendingFetch: PendingFetch =>
           curBytesInFlight.addAndGet(pendingFetch.totalLength)
           Future { fetchBlocks(pendingFetch) }
@@ -371,6 +379,11 @@ private[spark] final class RdmaShuffleFetcherIterator(
         throw new FetchFailedException(blockManagerId, shuffleId, 0, partitionId, e)
       case SuccessFetchResult(_, _, inputStream) => inputStream
     }
+  }
+
+  override def toString(): String = {
+    s"RdmaShuffleFetchIterator(shuffleId: $shuffleId, startPartition: $startPartition," +
+      s"endPartition: $endPartition)"
   }
 }
 

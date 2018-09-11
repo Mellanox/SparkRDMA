@@ -36,13 +36,14 @@ public class RdmaMappedFile {
   private static final Method unmmap;
   private static final int ACCESS = IbvMr.IBV_ACCESS_REMOTE_READ;
 
-  private File file = null;
-  private FileChannel fileChannel = null;
+  private File file;
+  private FileChannel fileChannel;
 
   private final IbvPd ibvPd;
-  private IbvMr odpMr = null;
+  private IbvMr odpMr;
 
   private final RdmaMapTaskOutput rdmaMapTaskOutput;
+
   public RdmaMapTaskOutput getRdmaMapTaskOutput() { return rdmaMapTaskOutput; }
 
   private class RdmaFileMapping {
@@ -68,7 +69,7 @@ public class RdmaMappedFile {
       mmap.setAccessible(true);
       unmmap = FileChannelImpl.class.getDeclaredMethod("unmap0", long.class, long.class);
       unmmap.setAccessible(true);
-    } catch (Exception e){
+    } catch (Exception e) {
       throw new RuntimeException(e);
     }
   }
@@ -176,6 +177,7 @@ public class RdmaMappedFile {
       rdmaFileMapping.ibvMr.deregMr().execute().free();
     }
     unmmap.invoke(null, rdmaFileMapping.mapAddress, rdmaFileMapping.alignedLength);
+    getRdmaMapTaskOutput().getRdmaBuffer().free();
   }
 
   private void unregisterAndUnmap() throws InvocationTargetException, IllegalAccessException,
@@ -215,6 +217,9 @@ public class RdmaMappedFile {
     ByteBuffer byteBuffer;
     try {
       byteBuffer = (ByteBuffer)constructor.newInstance(address, length);
+    } catch (InvocationTargetException ex) {
+      throw new IOException("java.nio.DirectByteBuffer: " +
+        "InvocationTargetException: " + ex.getTargetException());
     } catch (Exception e) {
       throw new IOException("java.nio.DirectByteBuffer exception: " + e.toString());
     }
