@@ -5,12 +5,6 @@ performing Shuffle data transfers in Spark jobs.
 This open-source project is developed, maintained and supported by [Mellanox Technologies](http://www.mellanox.com).
 
 ## Performance results
-Example performance speedup for [HiBench](https://github.com/intel-hadoop/HiBench) workloads:
-
-Test environment:
-
-16 Spark standalone workers, 2x Intel Xeon E5-2697 v3 @ 2.60GHz, 30 cores per Worker, 256GB RAM, non-flash storage (HDD)
-
 ### Terasort
 ![TeraSort results](https://user-images.githubusercontent.com/1121987/44670087-6c78bb00-aa2a-11e8-834c-71bc177abd87.png)
 
