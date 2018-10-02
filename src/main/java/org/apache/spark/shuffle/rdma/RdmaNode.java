@@ -82,7 +82,7 @@ class RdmaNode {
         bindPort = bindPort != 0 ? bindPort + 1 : 0;
       }
 
-      if (err != 0 || listenerRdmaCmId.getVerbs() == null){
+      if (err != 0 || listenerRdmaCmId.getVerbs() == null) {
         throw new IOException("Failed to bind. Make sure your NIC supports RDMA");
       }
 
@@ -197,7 +197,8 @@ class RdmaNode {
 
             rdmaChannel.stop();
           } else {
-            logger.info("Received an unexpected CM Event {}", eventType);
+            logger.info("Received an unexpected CM Event {}",
+                RdmaCmEvent.EventType.values()[eventType]);
           }
         } catch (Exception e) {
           e.printStackTrace();
@@ -373,9 +374,17 @@ class RdmaNode {
     }
 
     // Wait for all of the channels to disconnect
-    for (FutureTask<Void> futureTask: futureTaskList) { futureTask.get(); }
+    for (FutureTask<Void> futureTask: futureTaskList) {
+      try {
+        futureTask.get(conf.teardownListenTimeout(), TimeUnit.MILLISECONDS);
+      } catch (TimeoutException e) {
+        logger.error("Failed to stop RdmaChannel during " + conf.teardownListenTimeout() + " ms");
+      } catch (Exception ex) {
+        logger.error(ex.toString());
+      }
+    }
 
-    if (runThread.getAndSet(false)) { listeningThread.join(); }
+    if (runThread.getAndSet(false)) { listeningThread.join(conf.teardownListenTimeout()); }
 
     // Spawn simultaneous disconnect tasks to speed up tear-down
     futureTaskList = new LinkedList<>();
@@ -385,7 +394,15 @@ class RdmaNode {
     }
 
     // Wait for all of the channels to disconnect
-    for (FutureTask<Void> futureTask: futureTaskList) { futureTask.get(); }
+    for (FutureTask<Void> futureTask: futureTaskList) {
+      try {
+        futureTask.get(conf.teardownListenTimeout(), TimeUnit.MILLISECONDS);
+      } catch (TimeoutException e) {
+        logger.error("Failed to stop RdmaChannel during " + conf.teardownListenTimeout() + " ms");
+      } catch (Exception ex) {
+        logger.error(ex.toString());
+      }
+    }
 
     if (rdmaBufferManager != null) { rdmaBufferManager.stop(); }
     if (ibvPd != null) { ibvPd.deallocPd(); }

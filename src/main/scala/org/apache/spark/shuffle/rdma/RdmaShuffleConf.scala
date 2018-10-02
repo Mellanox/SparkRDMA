@@ -46,7 +46,7 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
         case _ => Utils.byteStringAsBytes(defaultValue)
       }
 
-  private def getConfKey(name: String, defaultValue: String): String = conf.get(name, defaultValue)
+  def getConfKey(name: String, defaultValue: String): String = conf.get(name, defaultValue)
 
   private def toRdmaConfKey(name: String) = "spark.shuffle.rdma." + name
 
@@ -58,12 +58,14 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
   //
   // RDMA resource parameters
   //
-  lazy val recvQueueDepth: Int = getRdmaConfIntInRange("recvQueueDepth", 1024, 256, 65535)
+  lazy val recvQueueDepth: Int = getRdmaConfIntInRange("recvQueueDepth", 256, 256, 65535)
   lazy val sendQueueDepth: Int = getRdmaConfIntInRange("sendQueueDepth", 4096, 256, 65535)
   lazy val recvWrSize: Int = getRdmaConfSizeAsBytesInRange("recvWrSize", "4k", "2k", "1m").toInt
   lazy val swFlowControl: Boolean = conf.getBoolean(toRdmaConfKey("swFlowControl"), true)
   lazy val maxBufferAllocationSize: Long = getRdmaConfSizeAsBytesInRange(
       "maxBufferAllocationSize", "10g", "0", "10t")
+  // Only required to collect ODP stats from sysfs
+  lazy val rdmaDeviceNum: Int = conf.getInt(toRdmaConfKey("device.num"), 0)
 
   def useOdp(context: IbvContext): Boolean = {
     conf.getBoolean(toRdmaConfKey("useOdp"), false) && {
@@ -98,9 +100,23 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
   lazy val shuffleReadBlockSize: Long = getRdmaConfSizeAsBytesInRange(
     "shuffleReadBlockSize", "256k", "0", "512m")
   lazy val maxBytesInFlight: Long = getRdmaConfSizeAsBytesInRange(
-    "maxBytesInFlight", "1m", "128k", "100g")
-  lazy val maxAggBlock: Long = getRdmaConfSizeAsBytesInRange("maxAggBlock", "2m", "1k", "1g")
-  lazy val maxAggPrealloc: Long = getRdmaConfSizeAsBytesInRange("maxAggPrealloc", "0", "0", "10g")
+    "maxBytesInFlight", "48m", "128k", "100g")
+
+  // Comma separated list of buffer size : buffer count pairs. E.g. 4k:1000,16k:500
+  lazy val preAllocateBuffers: Map[Int, Int] = {
+    val bufferMap = getRdmaConfKey("preAllocateBuffers", "")
+      .split(",").withFilter(s => !s.isEmpty)
+      .map(entry => entry.split(":") match {
+      case Array(bufferSize, bufferCount) =>
+        (Utils.byteStringAsBytes(bufferSize.trim).toInt, bufferCount.toInt)
+    }).toMap
+    if (bufferMap.keys.sum >= maxBufferAllocationSize) {
+      throw new Exception("Total pre allocation buffer size >= " +
+        "spark.shuffle.rdma.maxBufferAllocationSize")
+    }
+    bufferMap
+  }
+
   // Remote fetch block statistics
   lazy val collectShuffleReaderStats: Boolean = conf.getBoolean(
     toRdmaConfKey("collectShuffleReaderStats"),
@@ -110,7 +126,8 @@ class RdmaShuffleConf(conf: SparkConf) extends Logging{
   lazy val fetchTimeBucketSizeInMs: Int = getRdmaConfIntInRange("fetchTimeBucketSizeInMs", 300, 5,
     60000)
   lazy val fetchTimeNumBuckets: Int = getRdmaConfIntInRange("fetchTimeNumBuckets", 5, 2, 100)
-
+  // ODP statistics
+  lazy val collectOdpStats: Boolean = conf.getBoolean(toRdmaConfKey("collectOdpStats"), true)
   //
   // Addressing and connection configuration
   //

@@ -19,7 +19,9 @@ package org.apache.spark.shuffle.rdma;
 
 import java.io.IOException;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -31,10 +33,10 @@ import org.slf4j.LoggerFactory;
 import scala.concurrent.ExecutionContext;
 import scala.concurrent.ExecutionContextExecutor;
 
-
 public class RdmaBufferManager {
   private class AllocatorStack {
     private final AtomicInteger totalAlloc = new AtomicInteger(0);
+    private final AtomicInteger preAllocs = new AtomicInteger(0);
     private final ConcurrentLinkedDeque<RdmaBuffer> stack = new ConcurrentLinkedDeque<>();
     private final int length;
     private long lastAccess;
@@ -46,6 +48,10 @@ public class RdmaBufferManager {
 
     private int getTotalAlloc() {
       return totalAlloc.get();
+    }
+
+    private int getTotalPreAllocs() {
+      return preAllocs.get();
     }
 
     private RdmaBuffer get() throws IOException {
@@ -61,16 +67,17 @@ public class RdmaBufferManager {
     }
 
     private void put(RdmaBuffer rdmaBuffer) {
+      rdmaBuffer.clean();
       lastAccess = System.nanoTime();
       stack.addLast(rdmaBuffer);
       idleBuffersSize.addAndGet(length);
     }
 
     private void preallocate(int numBuffers) throws IOException {
-      logger.debug("Pre allocating {} buffer of size {} KB", numBuffers, length / 1024);
+      RdmaBuffer[] preAllocatedBuffers = RdmaBuffer.preAllocate(getPd(), length, numBuffers);
       for (int i = 0; i < numBuffers; i++) {
-        put(new RdmaBuffer(getPd(), length));
-        totalAlloc.getAndIncrement();
+        put(preAllocatedBuffers[i]);
+        preAllocs.getAndIncrement();
       }
     }
 
@@ -88,13 +95,15 @@ public class RdmaBufferManager {
   private static final int MIN_BLOCK_SIZE = 16 * 1024;
 
   private final int minimumAllocationSize;
+  private final AtomicBoolean startedCleanStacks = new AtomicBoolean(false);
   private final ConcurrentHashMap<Integer, AllocatorStack> allocStackMap =
     new ConcurrentHashMap<>();
-  private IbvPd pd = null;
+  private IbvPd pd;
   private IbvMr odpMr = null;
   private long maxCacheSize;
   private static final ExecutionContextExecutor globalScalaExecutor =
     ExecutionContext.Implicits$.MODULE$.global();
+  private OdpStats odpStats = null;
 
   RdmaBufferManager(IbvPd pd, boolean isExecutor, RdmaShuffleConf conf) throws IOException {
     this.pd = pd;
@@ -106,17 +115,27 @@ public class RdmaBufferManager {
 
       SVCRegMr sMr = pd.regMr(0, -1, access).execute();
       this.odpMr = sMr.getMr();
+      if (conf.collectOdpStats()) {
+        odpStats = new OdpStats(conf);
+      }
       sMr.free();
     }
+  }
 
-    int aggBlockPrealloc = (int)(conf.maxAggPrealloc() / conf.maxAggBlock());
-    if (aggBlockPrealloc > 0 && isExecutor) {
-      AllocatorStack allocatorStack = getOrCreateAllocatorStack((int)conf.maxAggBlock());
-      FutureTask<Void> preAllocate = new FutureTask<>(() -> {
-        allocatorStack.preallocate(aggBlockPrealloc);
-        return null;
-      });
-      globalScalaExecutor.execute(preAllocate);
+  /**
+   * Pre allocates specified number of buffers of particular size in a single MR.
+   * @throws IOException
+   */
+  public void preAllocate(int buffSize, int buffCount) throws IOException {
+    long totalSize = ((long) buffCount) * buffSize;
+    // Disni uses int for length, so we can only allocate and register up to 2GB in a single call
+    if (totalSize > (Integer.MAX_VALUE - 1)) {
+      int numAllocs = (int)(totalSize / Integer.MAX_VALUE) + 1;
+      for (int i = 0; i < numAllocs; i++) {
+        getOrCreateAllocatorStack(buffSize).preallocate(buffCount / numAllocs);
+      }
+    } else {
+      getOrCreateAllocatorStack(buffSize).preallocate(buffCount);
     }
   }
 
@@ -143,7 +162,6 @@ public class RdmaBufferManager {
       length |= length >> 16;
       length++;
     }
-
     return getOrCreateAllocatorStack(length).get();
   }
 
@@ -153,38 +171,48 @@ public class RdmaBufferManager {
       buf.free();
     } else {
       allocatorStack.put(buf);
-      FutureTask<Void> cleaner = new FutureTask<>(() -> {
-        // Check the size of current idling buffers
-        long idleBuffersSize = allocStackMap
-          .reduceValuesToLong(100L, allocStack -> allocStack.idleBuffersSize.get(), 0L, Long::sum);
-        // If it reached out 90% of idle buffer capacity, clean old stacks
-        if (idleBuffersSize > maxCacheSize * 0.90) {
-          cleanLRUStacks(idleBuffersSize);
-        }
-        return null;
-      });
-      globalScalaExecutor.execute(cleaner);
+      if (startedCleanStacks.compareAndSet(false, true)) {
+        FutureTask<Void> cleaner = new FutureTask<>(() -> {
+          // Check the size of current idling buffers
+          long idleBuffersSize = allocStackMap
+              .reduceValuesToLong(100L, allocStack -> allocStack.idleBuffersSize.get(),
+                  0L, Long::sum);
+          // If it reached out 90% of idle buffer capacity, clean old stacks
+          if (idleBuffersSize > maxCacheSize * 0.90) {
+            cleanLRUStacks(idleBuffersSize);
+          } else {
+            startedCleanStacks.compareAndSet(true, false);
+          }
+          return null;
+        });
+        globalScalaExecutor.execute(cleaner);
+      }
     }
   }
 
-  private void cleanLRUStacks(long idleBuffersSize){
+  private void cleanLRUStacks(long idleBuffersSize) {
     logger.debug("Current idle buffer size {}KB exceed 90% of maxCacheSize {}KB." +
         " Cleaning LRU idle stacks", idleBuffersSize / 1024, maxCacheSize / 1024);
-    AllocatorStack lruStack = allocStackMap.values().stream()
-      .sorted(Comparator.comparingLong(s -> s.lastAccess)).iterator().next();
     long totalCleaned = 0;
     // Will clean up to 65% of capacity
-    long needToClean = idleBuffersSize - (long) (maxCacheSize * 0.65);
-    while (!lruStack.stack.isEmpty() && totalCleaned < needToClean) {
-      RdmaBuffer rdmaBuffer = lruStack.stack.pollFirst();
-      if (rdmaBuffer != null) {
-        rdmaBuffer.free();
-        totalCleaned += lruStack.length;
-        lruStack.idleBuffersSize.addAndGet(-lruStack.length);
+    long needToClean = idleBuffersSize - (long)(maxCacheSize * 0.65);
+    Iterator<AllocatorStack> stacks = allocStackMap.values().stream()
+      .filter(s -> !s.stack.isEmpty())
+      .sorted(Comparator.comparingLong(s -> s.lastAccess)).iterator();
+    while (stacks.hasNext()) {
+      AllocatorStack lruStack = stacks.next();
+      while (!lruStack.stack.isEmpty() && totalCleaned < needToClean) {
+        RdmaBuffer rdmaBuffer = lruStack.stack.pollFirst();
+        if (rdmaBuffer != null) {
+          rdmaBuffer.free();
+          totalCleaned += lruStack.length;
+          lruStack.idleBuffersSize.addAndGet(-lruStack.length);
+        }
       }
+      logger.debug("Cleaned {} KB of idle stacks of size {} KB",
+          totalCleaned / 1024, lruStack.length / 1024);
     }
-    logger.debug("Cleaned {} KB of idle stacks of size {} KB",
-      totalCleaned / 1024, lruStack.length / 1024);
+    startedCleanStacks.compareAndSet(true, false);
   }
 
   IbvPd getPd() { return this.pd; }
@@ -196,14 +224,17 @@ public class RdmaBufferManager {
     for (Integer size : allocStackMap.keySet()) {
       AllocatorStack allocatorStack = allocStackMap.remove(size);
       if (allocatorStack != null) {
-        logger.info("Allocated " + allocatorStack.getTotalAlloc() + " buffers of size " +
-          (size /1024) + " KB");
+        logger.info( "Pre allocated {}, allocated {} buffers of size {} KB",
+            allocatorStack.getTotalPreAllocs(), allocatorStack.getTotalAlloc(), (size / 1024));
         allocatorStack.close();
       }
     }
 
     if (odpMr != null) {
       odpMr.deregMr().execute().free();
+      if (odpStats != null) {
+        odpStats.printODPStatistics();
+      }
     }
   }
 }

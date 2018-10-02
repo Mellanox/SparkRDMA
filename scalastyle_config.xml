@@ -276,10 +276,8 @@ This file is divided into 3 sections:
     <!--       rules we'd like to enforce, but haven't cleaned up the codebase yet        -->
     <!-- ================================================================================ -->
 
-    <!-- We cannot turn the following two on, because it'd fail a lot of string interpolation use cases. -->
-    <!-- Ideally the following two rules should be configurable to rule out string interpolation. -->
-    <check level="error" class="org.scalastyle.scalariform.NoWhitespaceBeforeLeftBracketChecker" enabled="false"></check>
-    <check level="error" class="org.scalastyle.scalariform.NoWhitespaceAfterLeftBracketChecker" enabled="false"></check>
+    <check level="error" class="org.scalastyle.scalariform.NoWhitespaceBeforeLeftBracketChecker"></check>
+    <check level="error" class="org.scalastyle.scalariform.NoWhitespaceAfterLeftBracketChecker"></check>
 
     <!-- This breaks symbolic method names so we don't turn it on. -->
     <!-- Maybe we should update it to allow basic symbolic names, and then we are good to go. -->

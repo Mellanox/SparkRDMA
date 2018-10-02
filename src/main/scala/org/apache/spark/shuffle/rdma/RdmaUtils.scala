@@ -21,9 +21,14 @@ import java.io._
 import java.nio.charset.Charset
 import java.util.concurrent.ConcurrentHashMap
 
+import org.apache.spark.ShuffleDependency
+import org.apache.spark.shuffle.BaseShuffleHandle
+import org.apache.spark.shuffle.sort.SerializedShuffleHandle
 import org.apache.spark.storage.BlockManagerId
 
-case class RdmaBlockLocation(var address: Long, var length: Int, var mKey: Int)
+case class RdmaBlockLocation(var address: Long, var length: Int, var mKey: Int) {
+  require(length >= 0, s"Block length must be >=0, but $length is set")
+}
 
 class SerializableBlockManagerId private (executorId__ : String, host__ : String, port__ : Int) {
   private val blockManagerId = BlockManagerId(executorId__, host__, port__)
@@ -136,3 +141,19 @@ object RdmaShuffleManagerId {
     rdmaShuffleManagerIdIdCache.get(id)
   }
 }
+
+class RdmaBaseShuffleHandle[K, V, C](val driverTableAddress: Long,
+    val driverTableLength: Int,
+    val driverTableRKey: Int,
+    shuffleId: Int,
+    numMaps: Int,
+    dependency: ShuffleDependency[K, V, C])
+    extends BaseShuffleHandle[K, V, C](shuffleId, numMaps, dependency)
+
+class RdmaSerializedShuffleHandle[K, V](val driverTableAddress: Long,
+    val driverTableLength: Int,
+    val driverTableRKey: Int,
+    shuffleId: Int,
+    numMaps: Int,
+    dependency: ShuffleDependency[K, V, V])
+    extends SerializedShuffleHandle[K, V](shuffleId, numMaps, dependency)
