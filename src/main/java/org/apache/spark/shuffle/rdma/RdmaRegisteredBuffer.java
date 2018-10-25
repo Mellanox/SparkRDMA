@@ -18,7 +18,6 @@
 package org.apache.spark.shuffle.rdma;
 
 import java.io.IOException;
-import java.lang.reflect.Constructor;
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -75,22 +74,9 @@ public class RdmaRegisteredBuffer {
       throw new IllegalArgumentException("Exceeded Registered Length!");
     }
 
-    Class<?> classDirectByteBuffer;
-    try {
-      classDirectByteBuffer = Class.forName("java.nio.DirectByteBuffer");
-    } catch (ClassNotFoundException e) {
-      throw new IOException("java.nio.DirectByteBuffer class not found");
-    }
-    Constructor<?> constructor;
-    try {
-      constructor = classDirectByteBuffer.getDeclaredConstructor(long.class, int.class);
-    } catch (NoSuchMethodException e) {
-      throw new IOException("java.nio.DirectByteBuffer constructor not found");
-    }
-    constructor.setAccessible(true);
     ByteBuffer byteBuffer;
     try {
-      byteBuffer = (ByteBuffer)constructor.newInstance(
+      byteBuffer = (ByteBuffer)RdmaBuffer.directBufferConstructor.newInstance(
         getRegisteredAddress() + (long)blockOffset, length);
       blockOffset += length;
     } catch (Exception e) {

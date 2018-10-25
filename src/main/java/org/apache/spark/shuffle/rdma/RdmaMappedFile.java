@@ -200,30 +200,14 @@ public class RdmaMappedFile {
   }
 
   private ByteBuffer getByteBuffer(long address, int length) throws IOException {
-    Class<?> classDirectByteBuffer;
     try {
-      classDirectByteBuffer = Class.forName("java.nio.DirectByteBuffer");
-    } catch (ClassNotFoundException e) {
-      throw new IOException("java.nio.DirectByteBuffer class not found");
-    }
-    Constructor<?> constructor;
-    try {
-      constructor = classDirectByteBuffer.getDeclaredConstructor(long.class, int.class);
-    } catch (NoSuchMethodException e) {
-      throw new IOException("java.nio.DirectByteBuffer constructor not found");
-    }
-    constructor.setAccessible(true);
-    ByteBuffer byteBuffer;
-    try {
-      byteBuffer = (ByteBuffer)constructor.newInstance(address, length);
+      return (ByteBuffer)RdmaBuffer.directBufferConstructor.newInstance(address, length);
     } catch (InvocationTargetException ex) {
       throw new IOException("java.nio.DirectByteBuffer: " +
         "InvocationTargetException: " + ex.getTargetException());
     } catch (Exception e) {
       throw new IOException("java.nio.DirectByteBuffer exception: " + e.toString());
     }
-
-    return byteBuffer;
   }
 
   public ByteBuffer getByteBufferForPartition(int partitionId) throws IOException {

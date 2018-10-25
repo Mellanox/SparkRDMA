@@ -40,7 +40,18 @@ class RdmaBuffer {
   private final MemoryBlock block;
   private AtomicInteger refCount;
 
-  public static final UnsafeMemoryAllocator unsafeAlloc = new UnsafeMemoryAllocator();
+  static final UnsafeMemoryAllocator unsafeAlloc = new UnsafeMemoryAllocator();
+  public static final Constructor<?> directBufferConstructor;
+
+  static {
+    try {
+      Class<?> classDirectByteBuffer = Class.forName("java.nio.DirectByteBuffer");
+      directBufferConstructor = classDirectByteBuffer.getDeclaredConstructor(long.class, int.class);
+      directBufferConstructor.setAccessible(true);
+    } catch (Exception e) {
+      throw new RuntimeException("java.nio.DirectByteBuffer class not found");
+    }
+  }
 
   RdmaBuffer(IbvPd ibvPd, int length) throws IOException {
     block = unsafeAlloc.allocate((long)length);
@@ -126,25 +137,10 @@ class RdmaBuffer {
   }
 
   ByteBuffer getByteBuffer() throws IOException {
-    Class<?> classDirectByteBuffer;
     try {
-      classDirectByteBuffer = Class.forName("java.nio.DirectByteBuffer");
-    } catch (ClassNotFoundException e) {
-      throw new IOException("java.nio.DirectByteBuffer class not found");
-    }
-    Constructor<?> constructor;
-    try {
-      constructor = classDirectByteBuffer.getDeclaredConstructor(long.class, int.class);
-    } catch (NoSuchMethodException e) {
-      throw new IOException("java.nio.DirectByteBuffer constructor not found");
-    }
-    constructor.setAccessible(true);
-    ByteBuffer byteBuffer;
-    try {
-      byteBuffer = (ByteBuffer)constructor.newInstance(getAddress(), getLength());
+      return (ByteBuffer)directBufferConstructor.newInstance(getAddress(), getLength());
     } catch (Exception e) {
       throw new IOException("java.nio.DirectByteBuffer exception: " + e.toString());
     }
-    return byteBuffer;
   }
 }
