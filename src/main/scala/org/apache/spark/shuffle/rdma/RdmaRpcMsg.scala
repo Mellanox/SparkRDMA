@@ -25,8 +25,6 @@ import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.shuffle.rdma.RdmaRpcMsgType.RdmaRpcMsgType
-import org.apache.spark.storage.BlockManagerId
-
 
 object RdmaRpcMsgType extends Enumeration {
   type RdmaRpcMsgType = Value
@@ -80,14 +78,14 @@ object RdmaRpcMsg extends Logging {
   }
 }
 
-class RdmaShuffleManagerHelloRpcMsg(var rdmaShuffleManagerId: RdmaShuffleManagerId)
-    extends RdmaRpcMsg {
-  private def this() = this(null)  // For deserialization only
+class RdmaShuffleManagerHelloRpcMsg(var rdmaShuffleManagerId: RdmaShuffleManagerId,
+    var channelPort: Int) extends RdmaRpcMsg {
+  private def this() = this(null, 0)  // For deserialization only
 
   override protected def msgType: RdmaRpcMsgType = RdmaRpcMsgType.RdmaShuffleManagerHello
 
   override protected def getLengthInSegments(segmentSize: Int): Array[Int] = {
-    val serializedLength = rdmaShuffleManagerId.serializedLength
+    val serializedLength = rdmaShuffleManagerId.serializedLength + 4
     require(serializedLength <= segmentSize, "RdmaBuffer RPC segment size is too small")
 
     Array.fill(1) { serializedLength }
@@ -96,10 +94,12 @@ class RdmaShuffleManagerHelloRpcMsg(var rdmaShuffleManagerId: RdmaShuffleManager
   override protected def writeSegments(outs: Iterator[(DataOutputStream, Int)]): Unit = {
     val out = outs.next()._1
     rdmaShuffleManagerId.write(out)
+    out.writeInt(channelPort)
   }
 
   override protected def read(in: DataInputStream): Unit = {
     rdmaShuffleManagerId = RdmaShuffleManagerId(in)
+    channelPort = in.readInt()
   }
 }
 

@@ -52,11 +52,12 @@ class RdmaNode {
   private InetAddress driverInetAddress;
   private final ArrayList<Integer> cpuArrayList = new ArrayList<>();
   private int cpuIndex = 0;
+  private final RdmaCompletionListener receiveListener;
 
   RdmaNode(String hostName, boolean isExecutor, final RdmaShuffleConf conf,
       final RdmaCompletionListener receiveListener) throws Exception {
     this.conf = conf;
-
+    this.receiveListener = receiveListener;
     try {
       driverInetAddress = InetAddress.getByName(conf.driverHost());
 
@@ -147,10 +148,8 @@ class RdmaNode {
             }
 
             RdmaChannel.RdmaChannelType rdmaChannelType;
-            if (driverInetAddress.equals(inetSocketAddress.getAddress()) ||
-                driverInetAddress.equals(localInetSocketAddress.getAddress())) {
-              // RPC communication is limited to driver<->executor only
-              rdmaChannelType = RdmaChannel.RdmaChannelType.RPC_RESPONDER;
+            if (!isExecutor) {
+              rdmaChannelType = RdmaChannel.RdmaChannelType.RPC;
             } else {
               rdmaChannelType = RdmaChannel.RdmaChannelType.RDMA_READ_RESPONDER;
             }
@@ -161,6 +160,12 @@ class RdmaNode {
               logger.warn("Race in creating an RDMA Channel for " + inetSocketAddress);
               rdmaChannel.stop();
               continue;
+            }
+            if (!isExecutor) {
+              RdmaChannel previous = activeRdmaChannelMap.put(inetSocketAddress, rdmaChannel);
+              if (previous != null) {
+                previous.stop();
+              }
             }
 
             try {
@@ -275,8 +280,8 @@ class RdmaNode {
 
   public RdmaBufferManager getRdmaBufferManager() { return rdmaBufferManager; }
 
-  public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr, boolean mustRetry)
-      throws IOException, InterruptedException {
+  public RdmaChannel getRdmaChannel(InetSocketAddress remoteAddr, boolean mustRetry,
+      RdmaChannel.RdmaChannelType rdmaChannelType) throws IOException, InterruptedException {
     final long startTime = System.nanoTime();
     final int maxConnectionAttempts = conf.maxConnectionAttempts();
     final long connectionTimeout = maxConnectionAttempts * conf.rdmaCmEventTimeout();
@@ -287,16 +292,12 @@ class RdmaNode {
     do {
       rdmaChannel = activeRdmaChannelMap.get(remoteAddr);
       if (rdmaChannel == null) {
-        RdmaChannel.RdmaChannelType rdmaChannelType;
-        if (driverInetAddress.equals(remoteAddr.getAddress()) ||
-            driverInetAddress.equals(localInetSocketAddress.getAddress())) {
-          // RPC communication is limited to driver<->executor only
-          rdmaChannelType = RdmaChannel.RdmaChannelType.RPC_REQUESTOR;
-        } else {
-          rdmaChannelType = RdmaChannel.RdmaChannelType.RDMA_READ_REQUESTOR;
+        RdmaCompletionListener listener = null;
+        if (rdmaChannelType == RdmaChannel.RdmaChannelType.RPC) {
+          // Executor <-> Driver rdma channels need listener on both sides.
+          listener = receiveListener;
         }
-
-        rdmaChannel = new RdmaChannel(rdmaChannelType, conf, rdmaBufferManager, null,
+        rdmaChannel = new RdmaChannel(rdmaChannelType, conf, rdmaBufferManager, listener,
           getNextCpuVector());
 
         RdmaChannel actualRdmaChannel = activeRdmaChannelMap.putIfAbsent(remoteAddr, rdmaChannel);
