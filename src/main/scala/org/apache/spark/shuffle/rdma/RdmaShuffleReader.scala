@@ -46,7 +46,8 @@ private[spark] class RdmaShuffleReader[K, C](
       startPartition,
       endPartition,
       handle.shuffleId,
-      mapOutputTracker.getMapSizesByExecutorId(handle.shuffleId, startPartition, endPartition))
+      mapOutputTracker.getMapSizesByExecutorId(handle.shuffleId,
+        startPartition, endPartition).toSeq)
 
     val dummyShuffleBlockId = ShuffleBlockId(0, 0, 0)
     // Wrap the streams for compression based on configuration

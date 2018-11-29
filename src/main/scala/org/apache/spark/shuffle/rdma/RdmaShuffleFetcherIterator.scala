@@ -169,8 +169,8 @@ private[spark] final class RdmaShuffleFetcherIterator(
     }
 
     try {
-      val rdmaChannel = rdmaShuffleManager.getRdmaChannel(pendingFetch.rdmaShuffleManagerId,
-        mustRetry = true)
+      val rdmaChannel = rdmaShuffleManager.getRdmaChannel(
+        pendingFetch.rdmaShuffleManagerId, mustRetry = true)
       rdmaChannel.rdmaReadInQueue(listener, rdmaRegisteredBuffer.getRegisteredAddress,
         rdmaRegisteredBuffer.getLkey, pendingFetch.rdmaBlockLocations.map(_.length).toArray,
         pendingFetch.rdmaBlockLocations.map(_.address).toArray,

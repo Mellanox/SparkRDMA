@@ -82,36 +82,36 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
             // Book keep mapping from BlockManagerId to RdmaShuffleManagerId
             blockManagerIdToRdmaShuffleManagerId.put(helloMsg.rdmaShuffleManagerId.blockManagerId,
               helloMsg.rdmaShuffleManagerId)
-            Future {
-              getRdmaChannel(helloMsg.rdmaShuffleManagerId, mustRetry = false)
-            }.onSuccess { case rdmaChannel =>
-              rdmaShuffleManagersMap.put(helloMsg.rdmaShuffleManagerId, rdmaChannel)
-              val buffers = new RdmaAnnounceRdmaShuffleManagersRpcMsg(
-                rdmaShuffleManagersMap.keys.toSeq).toRdmaByteBufferManagedBuffers(
-                  getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
+            // Since we're reusing executor <-> driver QP - whis will be taken from cache.
+            val rdmaChannel = getRdmaChannel(helloMsg.rdmaShuffleManagerId.host,
+              helloMsg.channelPort, false, RdmaChannel.RdmaChannelType.RPC)
+            rdmaShuffleManagersMap.put(helloMsg.rdmaShuffleManagerId, rdmaChannel)
+            val buffers = new RdmaAnnounceRdmaShuffleManagersRpcMsg(
+              rdmaShuffleManagersMap.keys.toSeq).toRdmaByteBufferManagedBuffers(
+              getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
-              for ((dstRdmaShuffleManagerId, dstRdmaChannel) <- rdmaShuffleManagersMap) {
-                buffers.foreach(_.retain())
+            for ((dstRdmaShuffleManagerId, dstRdmaChannel) <- rdmaShuffleManagersMap) {
+              buffers.foreach(_.retain())
 
-                val listener = new RdmaCompletionListener {
-                  override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
-                  override def onFailure(e: Throwable): Unit = {
-                    buffers.foreach(_.release())
-                    logError("Failed to send RdmaAnnounceExecutorsRpcMsg to executor: " +
-                      dstRdmaShuffleManagerId + ", Exception: " + e)
-                  }
-                }
+              val listener = new RdmaCompletionListener {
+                override def onSuccess(buf: ByteBuffer): Unit = buffers.foreach(_.release())
 
-                try {
-                  dstRdmaChannel.rdmaSendInQueue(listener, buffers.map(_.getAddress),
-                    buffers.map(_.getLkey), buffers.map(_.getLength.toInt))
-                } catch {
-                  case e: Exception => listener.onFailure(e)
+                override def onFailure(e: Throwable): Unit = {
+                  buffers.foreach(_.release())
+                  logError("Failed to send RdmaAnnounceExecutorsRpcMsg to executor: " +
+                    dstRdmaShuffleManagerId + ", Exception: " + e)
                 }
               }
-              // Release the reference taken by the allocation
-              buffers.foreach(_.release())
+
+              try {
+                dstRdmaChannel.rdmaSendInQueue(listener, buffers.map(_.getAddress),
+                  buffers.map(_.getLkey), buffers.map(_.getLength.toInt))
+              } catch {
+                case e: Exception => listener.onFailure(e)
+              }
             }
+            // Release the reference taken by the allocation
+            buffers.foreach(_.release())
           }
 
         case announceMsg: RdmaAnnounceRdmaShuffleManagersRpcMsg =>
@@ -205,7 +205,8 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
       Future {
         getRdmaChannelToDriver(mustRetry = true)
       }.onSuccess { case rdmaChannel =>
-        val buffers = new RdmaShuffleManagerHelloRpcMsg(localRdmaShuffleManagerId.get).
+        val port = rdmaChannel.getSourceSocketAddress.getPort
+        val buffers = new RdmaShuffleManagerHelloRpcMsg(localRdmaShuffleManagerId.get, port).
           toRdmaByteBufferManagedBuffers(getRdmaByteBufferManagedBuffer, rdmaShuffleConf.recvWrSize)
 
         val listener = new RdmaCompletionListener {
@@ -308,14 +309,19 @@ private[spark] class RdmaShuffleManager(val conf: SparkConf, isDriver: Boolean)
     }
   }
 
-  private def getRdmaChannel(host: String, port: Int, mustRetry: Boolean): RdmaChannel =
-    rdmaNode.get.getRdmaChannel(new InetSocketAddress(host, port), mustRetry)
+  private def getRdmaChannel(host: String, port: Int, mustRetry: Boolean,
+      rdmaChannelType: RdmaChannel.RdmaChannelType): RdmaChannel =
+    rdmaNode.get.getRdmaChannel(new InetSocketAddress(host, port), mustRetry, rdmaChannelType)
 
-  def getRdmaChannel(rdmaShuffleManagerId: RdmaShuffleManagerId, mustRetry: Boolean): RdmaChannel =
-    getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port, mustRetry)
+  def getRdmaChannel(rdmaShuffleManagerId: RdmaShuffleManagerId,
+      mustRetry: Boolean): RdmaChannel = {
+    getRdmaChannel(rdmaShuffleManagerId.host, rdmaShuffleManagerId.port, mustRetry,
+      RdmaChannel.RdmaChannelType.RDMA_READ_REQUESTOR)
+  }
 
   def getRdmaChannelToDriver(mustRetry: Boolean): RdmaChannel = getRdmaChannel(
-    rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort, mustRetry)
+    rdmaShuffleConf.driverHost, rdmaShuffleConf.driverPort, mustRetry,
+    RdmaChannel.RdmaChannelType.RPC)
 
   def getRdmaBufferManager: RdmaBufferManager = rdmaNode.get.getRdmaBufferManager
 

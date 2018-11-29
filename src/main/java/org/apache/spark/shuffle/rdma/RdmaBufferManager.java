@@ -25,9 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import com.ibm.disni.rdma.verbs.IbvMr;
 import com.ibm.disni.rdma.verbs.IbvPd;
-import com.ibm.disni.rdma.verbs.SVCRegMr;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.concurrent.ExecutionContext;
@@ -99,7 +97,7 @@ public class RdmaBufferManager {
   private final ConcurrentHashMap<Integer, AllocatorStack> allocStackMap =
     new ConcurrentHashMap<>();
   private IbvPd pd;
-  private IbvMr odpMr = null;
+  private final boolean useOdp;
   private long maxCacheSize;
   private static final ExecutionContextExecutor globalScalaExecutor =
     ExecutionContext.Implicits$.MODULE$.global();
@@ -110,15 +108,12 @@ public class RdmaBufferManager {
     this.minimumAllocationSize = Math.min(conf.recvWrSize(), MIN_BLOCK_SIZE);
     this.maxCacheSize = conf.maxBufferAllocationSize();
     if (conf.useOdp(pd.getContext())) {
-      int access = IbvMr.IBV_ACCESS_LOCAL_WRITE | IbvMr.IBV_ACCESS_REMOTE_WRITE |
-        IbvMr.IBV_ACCESS_REMOTE_READ | IbvMr.IBV_ACCESS_ON_DEMAND;
-
-      SVCRegMr sMr = pd.regMr(0, -1, access).execute();
-      this.odpMr = sMr.getMr();
+      useOdp = true;
       if (conf.collectOdpStats()) {
         odpStats = new OdpStats(conf);
       }
-      sMr.free();
+    } else {
+      useOdp = false;
     }
   }
 
@@ -217,9 +212,9 @@ public class RdmaBufferManager {
 
   IbvPd getPd() { return this.pd; }
 
-  IbvMr getOdpMr() { return this.odpMr; }
+  boolean useOdp() { return this.useOdp; }
 
-  void stop() throws IOException {
+  void stop() {
     logger.info("Rdma buffers allocation statistics:");
     for (Integer size : allocStackMap.keySet()) {
       AllocatorStack allocatorStack = allocStackMap.remove(size);
@@ -230,11 +225,8 @@ public class RdmaBufferManager {
       }
     }
 
-    if (odpMr != null) {
-      odpMr.deregMr().execute().free();
-      if (odpStats != null) {
-        odpStats.printODPStatistics();
-      }
+    if (useOdp && odpStats != null) {
+      odpStats.printODPStatistics();
     }
   }
 }

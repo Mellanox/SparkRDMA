@@ -34,7 +34,7 @@ Mellanox ConnectX-5 network adapter with 100GbE RoCE fabric, connected with a Me
 For more information on configuration, performance tuning and troubleshooting, please visit the [SparkRDMA GitHub Wiki](https://github.com/Mellanox/SparkRDMA/wiki)
 
 ## Runtime requirements
-* Apache Spark 2.0.0/2.1.0/2.2.0/2.3.0
+* Apache Spark 2.0.0/2.1.0/2.2.0/2.3.0/2.4.0
 * Java 8
 * An RDMA-supported network, e.g. RoCE or Infiniband
 
@@ -45,10 +45,11 @@ Please use the ["Releases"](https://github.com/Mellanox/SparkRDMA/releases) page
 <br>If you would like to build the project yourself, please refer to the ["Build"](https://github.com/Mellanox/SparkRDMA#build) section below.
 
 The pre-built binaries are packed as an archive that contains the following files:
-* spark-rdma-3.0-for-spark-2.0.0-jar-with-dependencies.jar
-* spark-rdma-3.0-for-spark-2.1.0-jar-with-dependencies.jar
-* spark-rdma-3.0-for-spark-2.2.0-jar-with-dependencies.jar
-* spark-rdma-3.0-for-spark-2.3.0-jar-with-dependencies.jar
+* spark-rdma-3.1-for-spark-2.0.0-jar-with-dependencies.jar
+* spark-rdma-3.1-for-spark-2.1.0-jar-with-dependencies.jar
+* spark-rdma-3.1-for-spark-2.2.0-jar-with-dependencies.jar
+* spark-rdma-3.1-for-spark-2.3.0-jar-with-dependencies.jar
+* spark-rdma-3.1-for-spark-2.4.0-jar-with-dependencies.jar
 * libdisni.so
 
 libdisni.so **must** be in `java.library.path` on every Spark Master and Worker (usually in /usr/lib)
@@ -56,10 +57,10 @@ libdisni.so **must** be in `java.library.path` on every Spark Master and Worker 
 ### Configuration
 
 Provide Spark the location of the SparkRDMA plugin jars by using the extraClassPath option.  For standalone mode this can
-be added to either spark-defaults.conf or any runtime configuration file.  For client mode this **must** be added to spark-defaults.conf. For Spark 2.0.0 (Replace with 2.1.0, 2.2.0 or 2.3.0 according to your Spark version):
+be added to either spark-defaults.conf or any runtime configuration file.  For client mode this **must** be added to spark-defaults.conf. For Spark 2.0.0 (Replace with 2.1.0, 2.2.0, 2.3.0, 2.4.0 according to your Spark version):
 ```
-spark.driver.extraClassPath   /path/to/SparkRDMA/target/spark-rdma-2.0-for-spark-2.0.0-jar-with-dependencies.jar
-spark.executor.extraClassPath /path/to/SparkRDMA/target/spark-rdma-2.0-for-spark-2.0.0-jar-with-dependencies.jar
+spark.driver.extraClassPath   /path/to/SparkRDMA/target/spark-rdma-3.1-for-spark-2.0.0-jar-with-dependencies.jar
+spark.executor.extraClassPath /path/to/SparkRDMA/target/spark-rdma-3.1-for-spark-2.0.0-jar-with-dependencies.jar
 ```
 
 ### Running
@@ -76,7 +77,7 @@ Building the SparkRDMA plugin requires [Apache Maven](http://maven.apache.org/) 
 
 1. Obtain a clone of [SparkRDMA](https://github.com/Mellanox/SparkRDMA)
 
-2. Build the plugin for your Spark version (either 2.0.0, 2.1.0, 2.2.0 or 2.3.0), e.g. for Spark 2.0.0:
+2. Build the plugin for your Spark version (either 2.0.0, 2.1.0, 2.2.0, 2.3.0, 2.4.0), e.g. for Spark 2.0.0:
 ```
 mvn -DskipTests clean package -Pspark-2.0.0
 ```
