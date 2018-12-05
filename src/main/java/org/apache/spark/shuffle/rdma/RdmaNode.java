@@ -356,6 +356,8 @@ class RdmaNode {
     FutureTask<Void> futureTask = new FutureTask<>(() -> {
       try {
         rdmaChannel.stop();
+      } catch (NullPointerException e) {
+        logger.trace("{} already stopped", rdmaChannel);
       } catch (InterruptedException | IOException e) {
         logger.warn("Exception caught while stopping an RdmaChannel", e);
       }
