@@ -29,12 +29,17 @@ import java.util.List;
 import com.ibm.disni.rdma.verbs.IbvMr;
 import com.ibm.disni.rdma.verbs.IbvPd;
 import com.ibm.disni.rdma.verbs.SVCRegMr;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import sun.misc.Unsafe;
 import sun.nio.ch.FileChannelImpl;
 
 public class RdmaMappedFile {
+  private static final Logger logger = LoggerFactory.getLogger(RdmaMappedFile.class);
   private static final Method mmap;
   private static final Method unmmap;
   private static final int ACCESS = IbvMr.IBV_ACCESS_REMOTE_READ;
+  private static long pageSize;
 
   private File file;
   private FileChannel fileChannel;
@@ -72,6 +77,19 @@ public class RdmaMappedFile {
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
+
+    try {
+      Field f = Unsafe.class.getDeclaredField("theUnsafe");
+      f.setAccessible(true);
+      Unsafe unsafe = (Unsafe)f.get(null);
+      pageSize =  unsafe.pageSize();
+      if ((pageSize == 0) || (pageSize & (pageSize - 1)) != 0) {
+        throw new Exception("Page size must be non zero and to be a power of 2");
+      }
+    } catch (Throwable e) {
+      logger.warn("Unable to get operating system page size. Guessing 4096.", e);
+      pageSize = 4096;
+    }
   }
 
   public RdmaMappedFile(File file, int chunkSize, long[] partitionLengths,
@@ -90,10 +108,6 @@ public class RdmaMappedFile {
     fileChannel = null;
 
     file.deleteOnExit();
-  }
-
-  private static long roundUpTo4096(long i) {
-    return (i + 0xfffL) & ~0xfffL;
   }
 
   private void mapAndRegister(int chunkSize, long[] partitionLengths) throws IOException,
@@ -142,11 +156,15 @@ public class RdmaMappedFile {
     }
   }
 
+  private static long roundUpToNextPageBoundary(long i) {
+    return (i + pageSize - 1) & ~(pageSize - 1);
+  }
+
   private void mapAndRegister(long fileOffset, long length) throws IOException,
       InvocationTargetException, IllegalAccessException {
-    long distanceFromPageBoundary = fileOffset % 4096;
+    long distanceFromPageBoundary = fileOffset % pageSize;
     long alignedOffset = fileOffset - distanceFromPageBoundary;
-    long alignedLength = roundUpTo4096(length + distanceFromPageBoundary);
+    long alignedLength = roundUpToNextPageBoundary(length + distanceFromPageBoundary);
     long mapAddress = (long)mmap.invoke(fileChannel, 1, alignedOffset, alignedLength);
     long address = mapAddress + distanceFromPageBoundary;
 
