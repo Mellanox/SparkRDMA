@@ -232,8 +232,12 @@ class RdmaNode {
     };
 
     final int maxCpu = Runtime.getRuntime().availableProcessors() - 1;
+    int numCompletionVectors = listenerRdmaCmId.getVerbs().getNumCompVectors();
+    if (numCompletionVectors <= 0) {
+      numCompletionVectors = 1;
+    }
     final int maxUsableCpu = Math.min(Runtime.getRuntime().availableProcessors(),
-      listenerRdmaCmId.getVerbs().getNumCompVectors()) - 1;
+      numCompletionVectors) - 1;
     if (maxUsableCpu < maxCpu - 1) {
       logger.warn("IbvContext supports only " + (maxUsableCpu + 1) + " CPU cores, while there are" +
         " " + (maxCpu + 1) + " CPU cores in the system. This may lead to under-utilization of the" +
